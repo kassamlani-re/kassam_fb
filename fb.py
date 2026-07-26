@@ -138,10 +138,17 @@ def handle_messages():
     return "تم الاستلام", 200
 
 def send_messenger_reply(recipient_id, text_reply):
-    """ دالة ترسل الرد المكتوب إلى حساب الزبون في ماسنجر عبر المفتاح الطويل """
-    # الرابط الصحيح والمعدل لإرسال طلبات محادثات ماسنجر الرسمية من ميتا
-    url = f"https://facebook.com{PAGE_ACCESS_TOKEN}"
+    """ دالة ترسل الرد المكتوب إلى حساب الزبون في ماسنجر بأمان وبدون أخطاء الروابط """
     
+    # 1. الرابط رسمي ونظيف تماماً وبدون دمج متغيرات داخله
+    url = "https://facebook.com"
+    
+    # 2. إرسال المفتاح كمعامل منفصل آمن ومحمي (Params)
+    query_params = {
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+    
+    # 3. محتوى الرسالة ومعرف الزبون
     payload = {
         "recipient": {"id": recipient_id},
         "message": {"text": text_reply}
@@ -149,13 +156,16 @@ def send_messenger_reply(recipient_id, text_reply):
     headers = {"Content-Type": "application/json"}
     
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        # نقوم بتمرير query_params عبر معامل params لتقوم المكتبة بتنظيفه تلقائياً
+        response = requests.post(url, json=payload, headers=headers, params=query_params)
+        
         if response.status_code == 200:
-            print("==> تم إرسال الرد العكسي للزبون بنجاح!")
+            print("==> تم إرسال الرد العكسي للزبون بنجاح واختفى الخطأ! 🎉")
         else:
-            print(f"فشل إرسال الرد. خطأ ميتا: {response.text}")
+            print(f"استلمنا رداً من ميتا ولكن برفض: {response.text}")
+            
     except Exception as e:
-        print("حدث خطأ أثناء محاولة إرسال الطلب لميتا:", e)
+        print("حدث خطأ أثناء محاولة الاتصال بخوادم ميتا:", e)
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
