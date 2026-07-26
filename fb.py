@@ -104,7 +104,6 @@ def verify_webhook():
     return "طلب غير صالح", 400
 
 # جلب مفتاح الصفحة الطويل من إعدادات السيرفر السحابي
-PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 
 @app.route('/webhook', methods=['POST'])
 def handle_messages():
