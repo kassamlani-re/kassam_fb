@@ -139,7 +139,9 @@ def handle_messages():
 
 def send_messenger_reply(recipient_id, text_reply):
     """ دالة ترسل الرد المكتوب إلى حساب الزبون في ماسنجر عبر المفتاح الطويل """
+    # الرابط الصحيح والمعدل لإرسال طلبات محادثات ماسنجر الرسمية من ميتا
     url = f"https://facebook.com{PAGE_ACCESS_TOKEN}"
+    
     payload = {
         "recipient": {"id": recipient_id},
         "message": {"text": text_reply}
