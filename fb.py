@@ -115,10 +115,6 @@ def handle_messages():
         
     if data.get('object') in ['page', 'instagram']:
         try:
-            print(f"هل تم العثور على المفتاح؟ {'نعم' if PAGE_ACCESS_TOKEN else 'لا'}")
-if PAGE_ACCESS_TOKEN:
-    print(f"طول المفتاح المستلم هو: {len(PAGE_ACCESS_TOKEN)} حرف")
-
             # قراءة الرسالة ونصها بأمان من فيسبوك
             entry = data['entry'][0]
             if 'messaging' in entry:
