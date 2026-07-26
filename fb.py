@@ -83,11 +83,11 @@ def calculate_delivery_cost(merchant_id, customer_lat, customer_lng):
 # ----------------------------------------------------
 # الوظيفة الثالثة: الـ Webhook (مستقبل ومحقق رسائل ميتا الموحد)
 # ----------------------------------------------------
-@app.route('/webhook', methods=['GET'])
 @app.route('/', methods=['GET'])
 def home():
     return "مرحباً بك! سيرفر منصة SaaS يعمل بنجاح ومستيقظ الآن 🚀", 200
 
+@app.route('/webhook', methods=['GET'])
 def verify_webhook():
     """ خطوة التحقق التي تطلبها ميتا عند ربط السيرفر """
     mode = request.args.get('hub.mode')
