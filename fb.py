@@ -102,20 +102,59 @@ def verify_webhook():
             return "توكن غير متطابق", 403
     return "طلب غير صالح", 400
 
+# جلب مفتاح الصفحة الطويل من إعدادات السيرفر السحابي
+PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
+
 @app.route('/webhook', methods=['POST'])
 def handle_messages():
-    """ استقبال الرسائل الفورية من واتساب، ماسنجر، وإنستغرام """
+    """ استقبال رسائل الزبائن الفورية والرد عليها تلقائياً """
     data = request.get_json()
     
-    # فرز وتوجيه الرسائل بناءً على نوع المنصة
-    if data.get('object') == 'whatsapp_business_account':
-        # معالجة رسائل واتساب (سنربطها بـ Gemini لاحقاً)
-        print("[واتساب] تم استقبال رسالة جديدة.")
-    elif data.get('object') in ['page', 'instagram']:
-        # معالجة رسائل ماسنجر وإنستغرام
-        print(f"[{data.get('object')}] تم استقبال رسالة جديدة.")
+    if not data:
+        return "بيانات فارغة", 400
+        
+    if data.get('object') in ['page', 'instagram']:
+        try:
+            # قراءة الرسالة ونصها بأمان من فيسبوك
+            entry = data['entry'][0]
+            if 'messaging' in entry:
+                messaging = entry['messaging'][0]
+                
+                if 'message' in messaging and 'text' in messaging['message']:
+                    sender_id = messaging['sender']['id'] # معرف حساب الزبون
+                    message_text = messaging['message']['text'] # نص رسالة الزبون
+                    
+                    print(f"[ماسنجر] رسالة من {sender_id}: {message_text}")
+                    
+                    # نص الرد العكسي التلقائي للتجربة
+                    reply_text = f"مرحباً! لقد استلمت رسالتك: '{message_text}' وجاري معالجتها بالذكاء الاصطناعي.. 🤖"
+                    
+                    # تشغيل دالة الإرسال لرد الرسالة لهاتف الزبون
+                    send_messenger_reply(sender_id, reply_text)
+                    
+        except Exception as e:
+            print("خطأ في قراءة رسالة ماسنجر:", e)
         
     return "تم الاستلام", 200
 
+def send_messenger_reply(recipient_id, text_reply):
+    """ دالة ترسل الرد المكتوب إلى حساب الزبون في ماسنجر عبر المفتاح الطويل """
+    url = f"https://facebook.com{PAGE_ACCESS_TOKEN}"
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": text_reply}
+    }
+    headers = {"Content-Type": "application/json"}
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code == 200:
+            print("==> تم إرسال الرد العكسي للزبون بنجاح!")
+        else:
+            print(f"فشل إرسال الرد. خطأ ميتا: {response.text}")
+    except Exception as e:
+        print("حدث خطأ أثناء محاولة إرسال الطلب لميتا:", e)
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
