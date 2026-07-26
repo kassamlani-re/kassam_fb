@@ -16,6 +16,7 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY")) 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
