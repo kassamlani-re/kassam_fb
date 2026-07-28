@@ -126,8 +126,17 @@ def get_chat_context(sender_id: str) -> list:
 # الوظيفة الرابعة: عقل البوت والتكامل مع Gemini والوظائف الذكية
 # ----------------------------------------------------
 def process_message_with_gemini(sender_id, user_message):
-    """ إرسال سياق المحادثة والرسالة الجديدة لـ Gemini وتفعيل استدعاء الدوال تلقائياً """
+    """ إرسال سياق المحادثة والرسالة الجديدة لـ Gemini وتحديد هوية المحلل تلقائياً """
     try:
+        # [تعديل جوهري]: جلب اسم المحل أو العيادة ديناميكياً من قاعدة البيانات لتعريف البوت بنفسه
+        merchant_name = "المحل"
+        try:
+            merchant_query = supabase.table("merchants").select("business_name").eq("id", CURRENT_MERCHANT_ID).single().execute()
+            if merchant_query.data and 'business_name' in merchant_query.data:
+                merchant_name = merchant_query.data['business_name']
+        except Exception as err:
+            print("تحذير: تعذر جلب اسم التاجر، سيتم استخدام اسم افتراضي:", err)
+
         # 1. جلب التاريخ القصير للمحادثة من جدول chat_history لضمان وجود ذاكرة للبوت
         history_contents = get_chat_context(sender_id)
         
@@ -143,7 +152,7 @@ def process_message_with_gemini(sender_id, user_message):
                 function_declarations=[
                     types.FunctionDeclaration(
                         name="check_and_book_appointment",
-                        description="تستخدم لحجز موعد جديد للزبون في العيادة أو المكتب بعد أخذ اسمه، هاتفه، والوقت المطلق بصيغة YYYY-MM-DD HH:MM:S.",
+                        description="تستخدم لحجز موعد جديد للزبون في العيادة أو المكتب بعد أخذ اسمه، هاتفه، والوقت المطلق بصيغة YYYY-MM-DD HH:MM:SS.",
                         parameters=types.Schema(
                             type=types.Type.OBJECT,
                             properties={
@@ -170,10 +179,12 @@ def process_message_with_gemini(sender_id, user_message):
             )
         ]
         
-        # 4. إعداد التوجيهات الأساسية لهوية البوت وسلوكه
+        # 4. [تعديل التوجيهات]: إجبار البوت على التحدث باسم المحل الحالي وإخفاء هويته التقنية تماماً
         system_instruction = (
-            "أنت مساعد ذكي ومحترف لمنصة SaaS تعمل لصالح تجار وعيادات أطباء. "
-            "أجب دائماً بلغة مهذبة، واضحة، وموجزة. "
+            f"أنت البوت المساعد الذكي الرسمي والمخصص لـ ({merchant_name}). "
+            f"مهمتك الأساسية هي الرد الآلي بدلاً من صاحب صفحة ({merchant_name}) ومساعدة الزبائن في استفساراتهم حول الخدمات، الأسعار، المواعيد، أو التوصيل. "
+            "ممنوع نهائياً أن تذكر للزبون أنك نموذج لغوي أو تم تطويرك من قبل Google، ولا تذكر شيئاً عن منصة SaaS. "
+            f"تحدث دائماً بضمير المتكلم نيابة عن ({merchant_name}) بلغة مهذبة، مرحبة، وموجزة جداً تناسب الدردشة الفورية. "
             "إذا طلب العميل حجز موعد، تأكد من جمع (الاسم، الهاتف، والوقت الدقيق) قبل استدعاء دالة الحجز. "
             "إذا أرسل العميل موقعه الجغرافي أو طلب حساب التوصيل، استخدم أداة حساب التوصيل فوراً لإفادته بالسعر الحقيقي والمسافة."
         )
@@ -181,10 +192,10 @@ def process_message_with_gemini(sender_id, user_message):
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             tools=tools,
-            temperature=0.7
+            temperature=0.5 # تقليل العشوائية ليصبح الرد أكثر انضباطاً واحترافية
         )
         
-        # 5. إرسال الطلب إلى نموذج Gemini الشامل والحديث
+        # 5. إرسال الطلب إلى نموذج Gemini
         response = gemini_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=history_contents,
@@ -195,19 +206,16 @@ def process_message_with_gemini(sender_id, user_message):
         if response.function_calls:
             for call in response.function_calls:
                 if call.name == "check_and_book_appointment":
-                    # تنفيذ دالة حجز الموعد وإرجاع النتيجة
                     args = call.args
                     result_msg = check_and_book_appointment(args['customer_name'], args['customer_phone'], args['requested_time_str'])
                     return result_msg
                     
                 elif call.name == "calculate_delivery_cost":
-                    # تنفيذ دالة حساب تكلفة التوصيل الجغرافية وإرجاع النتيجة
                     args = call.args
                     result_msg = calculate_delivery_cost(args['customer_lat'], args['customer_lng'])
                     return result_msg
         
-        # في حال كان رد طبيعي حوّله لنص وأرجعه
-        return response.text if response.text else "لم أتمكن من فهم طلبك، كيف يمكنني مساعدتك؟"
+        return response.text if response.text else "مرحباً بك، كيف يمكنني مساعدتك اليوم؟"
         
     except Exception as e:
         print("خطأ أثناء المعالجة عبر Gemini:", e)
