@@ -98,7 +98,7 @@ def save_to_chat_history(sender: str, message_text: str, platform: str = "messen
         print("خطأ أثناء حفظ سجل المحادثة:", e)
 
 def get_chat_context(sender_id: str) -> list:
-    """ جلب آخر 6 رسائل من السجل وترتيبها كرسائل سياق لـ Gemini """
+    """ جلب التاريخ وتصفيته برمجياً ليفهمه Gemini بدون تداخل أدوار """
     try:
         query = supabase.table("chat_history") \
             .select("sender, message_text") \
@@ -111,114 +111,70 @@ def get_chat_context(sender_id: str) -> list:
         history_data = query.data
         contents = []
         
-        # ترتيب المحادثة زمنياً من الأقدم للأحدث لتغذية عقل البوت
+        # تحويل السجل إلى كائنات برمجية نظيفة يفهمها الموديل مباشرة
         for msg in reversed(history_data):
+            # إذا كان المرسل ليس البوت فهو زبون (user)، وإذا كان البوت فهو (model)
             role = "user" if msg['sender'] != "bot" else "model"
             contents.append(types.Content(
                 role=role,
-                parts=[types.Part.from_text(text=msg['message_text'])]
+                parts=[types.Part.from_text(text=str(msg['message_text']))]
             ))
         return contents
     except Exception as e:
         print("خطأ أثناء جلب سياق المحادثة:", e)
         return []
-# ----------------------------------------------------
-# الوظيفة الرابعة: عقل البوت والتكامل مع Gemini والوظائف الذكية
-# ----------------------------------------------------
-def process_message_with_gemini(sender_id, user_message):
-    """ إرسال سياق المحادثة والرسالة الجديدة لـ Gemini وتحديد هوية المحلل تلقائياً """
-    try:
-        # [تعديل جوهري]: جلب اسم المحل أو العيادة ديناميكياً من قاعدة البيانات لتعريف البوت بنفسه
-        merchant_name = "المحل"
-        try:
-            merchant_query = supabase.table("merchants").select("business_name").eq("id", CURRENT_MERCHANT_ID).single().execute()
-            if merchant_query.data and 'business_name' in merchant_query.data:
-                merchant_name = merchant_query.data['business_name']
-        except Exception as err:
-            print("تحذير: تعذر جلب اسم التاجر، سيتم استخدام اسم افتراضي:", err)
 
-        # 1. جلب التاريخ القصير للمحادثة من جدول chat_history لضمان وجود ذاكرة للبوت
+def process_message_with_gemini(sender_id, user_message):
+    """ إرسال سياق نظيف وإجبار الموديل على الالتزام ببيانات جدول merchants """
+    try:
+        # جلب البيانات الحية من الجدول
+        merchant_name = "المحل"
+        merchant_phone = "غير مسجل"
+        business_type = "تجاري"
+        try:
+            merchant_query = supabase.table("merchants").select("business_name, business_type, phone_number").eq("id", CURRENT_MERCHANT_ID).single().execute()
+            if merchant_query.data:
+                merchant_name = merchant_query.data.get('business_name', 'المحل')
+                merchant_phone = merchant_query.data.get('phone_number', 'غير مسجل')
+                business_type = merchant_query.data.get('business_type', 'خدماتي')
+        except Exception as err:
+            print("تحذير: تعذر جلب بيانات التاجر الحقيقية:", err)
+
+        # جلب الذاكرة الصافية
         history_contents = get_chat_context(sender_id)
         
-        # 2. إضافة الرسالة الحالية الجديدة للزبون إلى قائمة السياق
+        # إضافة الرسالة الحالية
         history_contents.append(types.Content(
             role="user",
-            parts=[types.Part.from_text(text=user_message)]
+            parts=[types.Part.from_text(text=str(user_message))]
         ))
         
-        # 3. إعداد الأدوات (Functions) المتاحة لـ Gemini ليستخدمها عند الحاجة
-        tools = [
-            types.Tool(
-                function_declarations=[
-                    types.FunctionDeclaration(
-                        name="check_and_book_appointment",
-                        description="تستخدم لحجز موعد جديد للزبون في العيادة أو المكتب بعد أخذ اسمه، هاتفه، والوقت المطلق بصيغة YYYY-MM-DD HH:MM:SS.",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "customer_name": types.Schema(type=types.Type.STRING, description="اسم الزبون الكامل"),
-                                "customer_phone": types.Schema(type=types.Type.STRING, description="رقم هاتف الزبون الحركي"),
-                                "requested_time_str": types.Schema(type=types.Type.STRING, description="الوقت والتاريخ بصيغة YYYY-MM-DD HH:MM:SS")
-                            },
-                            required=["customer_name", "customer_phone", "requested_time_str"]
-                        )
-                    ),
-                    types.FunctionDeclaration(
-                        name="calculate_delivery_cost",
-                        description="تستخدم لحساب المسافة وتكلفة التوصيل الإجمالية للزبون بناءً على إحداثيات موقعه الجغرافي (خطوط الطول والعرض).",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "customer_lat": types.Schema(type=types.Type.NUMBER, description="خط العرض لموقع الزبون Latitude"),
-                                "customer_lng": types.Schema(type=types.Type.NUMBER, description="خط الطول لموقع الزبون Longitude")
-                            },
-                            required=["customer_lat", "customer_lng"]
-                        )
-                    )
-                ]
-            )
-        ]
-        
-        # 4. [تعديل التوجيهات]: إجبار البوت على التحدث باسم المحل الحالي وإخفاء هويته التقنية تماماً
+        # توجيهات صارمة جداً (Strict Constraints) لمنع ابتكار أرقام
         system_instruction = (
-            f"أنت البوت المساعد الذكي الرسمي والمخصص لـ ({merchant_name}). "
-            f"مهمتك الأساسية هي الرد الآلي بدلاً من صاحب صفحة ({merchant_name}) ومساعدة الزبائن في استفساراتهم حول الخدمات، الأسعار، المواعيد، أو التوصيل. "
-            "ممنوع نهائياً أن تذكر للزبون أنك نموذج لغوي أو تم تطويرك من قبل Google، ولا تذكر شيئاً عن منصة SaaS. "
-            f"تحدث دائماً بضمير المتكلم نيابة عن ({merchant_name}) بلغة مهذبة، مرحبة، وموجزة جداً تناسب الدردشة الفورية. "
-            "إذا طلب العميل حجز موعد، تأكد من جمع (الاسم، الهاتف، والوقت الدقيق) قبل استدعاء دالة الحجز. "
-            "إذا أرسل العميل موقعه الجغرافي أو طلب حساب التوصيل، استخدم أداة حساب التوصيل فوراً لإفادته بالسعر الحقيقي والمسافة."
+            f"أنت المساعد الافتراضي الآلي لصفحة ({merchant_name}) المتخصصة في ({business_type}). "
+            f"معلومات التواصل الحقيقية والوحيدة الخاصة بنا هي: رقم الهاتف الحركي هو ({merchant_phone}). "
+            "التزم بهذا الرقم حرفياً إذا سألك الزبون عن الهاتف، وممنوع اختراع أو تخمين أي أرقام أخرى. "
+            "ممنوع أن تطلب من الزبون إحداثيات أو أرقام جغرافية يدshort. "
+            "إذا طلب حساب التوصيل، قل له: (يرجى الضغط على زر مشاركة الموقع من المرفقات لتصلنا إحداثياتك تلقائياً). "
+            "أجب باختصار شديد، بأسلوب خدمة عملاء محترف وودود، ولا تذكر جوجل أو SaaS."
         )
         
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
-            tools=tools,
-            temperature=0.5 # تقليل العشوائية ليصبح الرد أكثر انضباطاً واحترافية
+            temperature=0.1, # تصفير العشوائية تماماً لضمان الالتزام بالحقائق
+            max_output_tokens=150
         )
         
-        # 5. إرسال الطلب إلى نموذج Gemini
         response = gemini_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=history_contents,
             config=config
         )
         
-        # 6. التحقق مما إذا كان Gemini يطلب استدعاء دالة أو أداة خارجية (Function Call)
-        if response.function_calls:
-            for call in response.function_calls:
-                if call.name == "check_and_book_appointment":
-                    args = call.args
-                    result_msg = check_and_book_appointment(args['customer_name'], args['customer_phone'], args['requested_time_str'])
-                    return result_msg
-                    
-                elif call.name == "calculate_delivery_cost":
-                    args = call.args
-                    result_msg = calculate_delivery_cost(args['customer_lat'], args['customer_lng'])
-                    return result_msg
-        
-        return response.text if response.text else "مرحباً بك، كيف يمكنني مساعدتك اليوم؟"
+        return response.text if response.text else "مرحباً بك، كيف يمكنني مساعدتك؟"
         
     except Exception as e:
-        print("خطأ أثناء المعالجة عبر Gemini:", e)
+        print("خطأ في المعالجة:", e)
         return "معذرةً، حدث خطأ مؤقت في نظام المعالجة الذكي."
 
 # ----------------------------------------------------
