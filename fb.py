@@ -16,7 +16,6 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
-PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY")) 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -104,6 +103,7 @@ def verify_webhook():
     return "طلب غير صالح", 400
 
 # جلب مفتاح الصفحة الطويل من إعدادات السيرفر السحابي
+PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 
 @app.route('/webhook', methods=['POST'])
 def handle_messages():
@@ -141,7 +141,7 @@ def send_messenger_reply(recipient_id, text_reply):
     """ دالة ترسل الرد المكتوب إلى حساب الزبون في ماسنجر بأمان وبدون أخطاء الروابط """
     
     # 1. الرابط رسمي ونظيف تماماً وبدون دمج متغيرات داخله
-        url = "https" + "://graph." + "facebook." + "com/v21.0/" + "me/messages"
+    url = "https" + "://graph." + "facebook." + "com/v21.0/" + "me/messages"
     
     # 2. إرسال المفتاح كمعامل منفصل آمن ومحمي (Params)
     query_params = {
