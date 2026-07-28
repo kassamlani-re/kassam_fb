@@ -141,7 +141,7 @@ def send_messenger_reply(recipient_id, text_reply):
     """ دالة ترسل الرد المكتوب إلى حساب الزبون في ماسنجر بأمان وبدون أخطاء الروابط """
     
     # 1. الرابط رسمي ونظيف تماماً وبدون دمج متغيرات داخله
-    url = "https://facebook.com"
+        url = "https" + "://graph." + "facebook." + "com/v21.0/" + "me/messages"
     
     # 2. إرسال المفتاح كمعامل منفصل آمن ومحمي (Params)
     query_params = {
