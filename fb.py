@@ -218,7 +218,6 @@ def process_message_with_gemini(sender_id, user_message):
         print("خطأ في المعالجة عبر Gemini:", e)
         return "معذرةً، حدث خطأ مؤقت في نظام المعالجة الذكي."
 
-
 # ----------------------------------------------------
 # الوظيفة الخامسة: مسارات استقبال وتحقق ويب هوك ميتا الموحد
 # ----------------------------------------------------
@@ -243,7 +242,7 @@ def verify_webhook():
 
 @app.route('/webhook', methods=['POST'])
 def handle_messages():
-    """ استقبال رسائل الزبائن الفورية ومعالجتها بالذكاء الاصطناعي """
+    """ استقبال الرسائل والمواقع الجغرافية ومعالجتها بالذكاء الاصطناعي """
     data = request.get_json()
     
     if not data:
@@ -254,12 +253,31 @@ def handle_messages():
             entry = data['entry'][0]
             if 'messaging' in entry:
                 messaging = entry['messaging'][0]
+                sender_id = messaging['sender']['id']  # معرف حساب الزبون الفريد
                 
+                # 1. حالة استقبال موقع جغرافي حقيقي من الزبون (Send Location)
+                if 'message' in messaging and 'attachments' in messaging['message']:
+                    for attachment in messaging['message']['attachments']:
+                        if attachment.get('type') == 'location':
+                            coordinates = attachment['payload']['coordinates']
+                            lat = coordinates['lat']
+                            lng = coordinates['long']
+                            
+                            print(f"[ماسنجر] استلمنا موقعاً جغرافياً حياً من {sender_id}: Lat={lat}, Lng={lng}")
+                            
+                            # تسجيل الحدث في الذاكرة وحساب التكلفة فوراً بالدالة الجغرافية
+                            save_to_chat_history(sender=sender_id, message_text="[أرسل موقعه الجغرافي]")
+                            reply_text = calculate_delivery_cost(lat, lng)
+                            
+                            save_to_chat_history(sender="bot", message_text=reply_text)
+                            send_messenger_reply(sender_id, reply_text)
+                            return "تم حساب التوصيل بنجاح", 200
+
+                # 2. حالة استقبال رسالة نصية عادية من الزبون
                 if 'message' in messaging and 'text' in messaging['message']:
-                    sender_id = messaging['sender']['id']  # معرف حساب الزبون الفريد
                     message_text = messaging['message']['text']  # نص رسالة الزبون
                     
-                    print(f"[ماسنجر] رسالة جديدة من {sender_id}: {message_text}")
+                    print(f"[ماسنجر] رسالة نصية جديدة من {sender_id}: {message_text}")
                     
                     # أ) حفظ رسالة الزبون الواردة أولاً في قاعدة البيانات
                     save_to_chat_history(sender=sender_id, message_text=message_text)
@@ -281,7 +299,6 @@ def handle_messages():
 def send_messenger_reply(recipient_id, text_reply):
     """ دالة ترسل الرد المكتوب إلى حساب الزبون في ماسنجر عبر الرابط الرسمي الصحيح ومجزأ لحمايته """
     
-    # الرابط مدمج ومقسم لتجنب حجب الفلتر الرقمي أثناء المحادثة وعمل الكود بأمان
     url = "https" + "://graph." + "facebook." + "com/v21.0/" + "me/messages"
     
     query_params = {
