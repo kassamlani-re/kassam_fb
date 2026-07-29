@@ -111,9 +111,7 @@ def get_chat_context(sender_id: str) -> list:
         history_data = query.data
         contents = []
         
-        # تحويل السجل إلى كائنات برمجية نظيفة يفهمها الموديل مباشرة
         for msg in reversed(history_data):
-            # إذا كان المرسل ليس البوت فهو زبون (user)، وإذا كان البوت فهو (model)
             role = "user" if msg['sender'] != "bot" else "model"
             contents.append(types.Content(
                 role=role,
@@ -125,9 +123,9 @@ def get_chat_context(sender_id: str) -> list:
         return []
 
 def process_message_with_gemini(sender_id, user_message):
-    """ إرسال سياق نظيف وإجبار الموديل على الالتزام ببيانات جدول merchants """
+    """ إرسال سياق نظيف وإجبار الموديل على الالتزام ببيانات جدول merchants وتفعيل الأدوات """
     try:
-        # جلب البيانات الحية من الجدول
+        # جلب البيانات الحية من الجدول لتغذية عقل البوت بالحقائق
         merchant_name = "المحل"
         merchant_phone = "غير مسجل"
         business_type = "تجاري"
@@ -140,29 +138,62 @@ def process_message_with_gemini(sender_id, user_message):
         except Exception as err:
             print("تحذير: تعذر جلب بيانات التاجر الحقيقية:", err)
 
-        # جلب الذاكرة الصافية
+        # جلب الذاكرة الصافية من جدول chat_history
         history_contents = get_chat_context(sender_id)
         
-        # إضافة الرسالة الحالية
+        # إضافة الرسالة الحالية الجديدة للزبون
         history_contents.append(types.Content(
             role="user",
             parts=[types.Part.from_text(text=str(user_message))]
         ))
         
-        # توجيهات صارمة جداً (Strict Constraints) لمنع ابتكار أرقام
+        # [التصحيح]: إعادة تعريف الأدوات والوظائف الذكية المتاحة لـ Gemini
+        tools = [
+            types.Tool(
+                function_declarations=[
+                    types.FunctionDeclaration(
+                        name="check_and_book_appointment",
+                        description="تستخدم لحجز موعد جديد للزبون في العيادة أو المكتب بعد أخذ اسمه، هاتفه، والوقت المطلوب بصيغة YYYY-MM-DD HH:MM:SS.",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "customer_name": types.Schema(type=types.Type.STRING, description="اسم الزبون الكامل"),
+                                "customer_phone": types.Schema(type=types.Type.STRING, description="رقم هاتف الزبون الحركي"),
+                                "requested_time_str": types.Schema(type=types.Type.STRING, description="الوقت والتاريخ بصيغة YYYY-MM-DD HH:MM:SS")
+                            },
+                            required=["customer_name", "customer_phone", "requested_time_str"]
+                        )
+                    ),
+                    types.FunctionDeclaration(
+                        name="calculate_delivery_cost",
+                        description="تستخدم لحساب المسافة وتكلفة التوصيل الإجمالية للزبون بناءً على إحداثيات موقعه الجغرافي.",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "customer_lat": types.Schema(type=types.Type.NUMBER, description="خط العرض لموقع الزبون Latitude"),
+                                "customer_lng": types.Schema(type=types.Type.NUMBER, description="خط الطول لموقع الزبون Longitude")
+                            },
+                            required=["customer_lat", "customer_lng"]
+                        )
+                    )
+                ]
+            )
+        ]
+        
         system_instruction = (
             f"أنت المساعد الافتراضي الآلي لصفحة ({merchant_name}) المتخصصة في ({business_type}). "
             f"معلومات التواصل الحقيقية والوحيدة الخاصة بنا هي: رقم الهاتف الحركي هو ({merchant_phone}). "
-            "التزم بهذا الرقم حرفياً إذا سألك الزبون عن الهاتف، وممنوع اختراع أو تخمين أي أرقام أخرى. "
-            "ممنوع أن تطلب من الزبون إحداثيات أو أرقام جغرافية يدshort. "
+            "التزم بهذا الرقم حرفياً إذا سألك الزبون عن الهاتف، وممنوع اختراع أو تخمين أي أرقام أخرى نهائياً. "
+            "ممنوع تماماً أن تطلب من الزبون كتابة أرقام إحداثيات أو أرقام جغرافية يدوياً. "
             "إذا طلب حساب التوصيل، قل له: (يرجى الضغط على زر مشاركة الموقع من المرفقات لتصلنا إحداثياتك تلقائياً). "
-            "أجب باختصار شديد، بأسلوب خدمة عملاء محترف وودود، ولا تذكر جوجل أو SaaS."
+            "أجب باختصار شديد، بأسلوب خدمة عملاء محترف وودود، ولا تذكر جوجل أو منصة SaaS."
         )
         
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
-            temperature=0.1, # تصفير العشوائية تماماً لضمان الالتزام بالحقائق
-            max_output_tokens=150
+            tools=tools, # تم تفعيل الأدوات هنا برمجياً
+            temperature=0.1,
+            max_output_tokens=200
         )
         
         response = gemini_client.models.generate_content(
@@ -171,11 +202,22 @@ def process_message_with_gemini(sender_id, user_message):
             config=config
         )
         
+        # تنفيذ الاستدعاء الذكي في حال قرر Gemini تشغيل أي دالة
+        if response.function_calls:
+            for call in response.function_calls:
+                if call.name == "check_and_book_appointment":
+                    args = call.args
+                    return check_and_book_appointment(args['customer_name'], args['customer_phone'], args['requested_time_str'])
+                elif call.name == "calculate_delivery_cost":
+                    args = call.args
+                    return calculate_delivery_cost(args['customer_lat'], args['customer_lng'])
+        
         return response.text if response.text else "مرحباً بك، كيف يمكنني مساعدتك؟"
         
     except Exception as e:
-        print("خطأ في المعالجة:", e)
+        print("خطأ في المعالجة عبر Gemini:", e)
         return "معذرةً، حدث خطأ مؤقت في نظام المعالجة الذكي."
+
 
 # ----------------------------------------------------
 # الوظيفة الخامسة: مسارات استقبال وتحقق ويب هوك ميتا الموحد
