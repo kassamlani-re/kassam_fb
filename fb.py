@@ -223,16 +223,28 @@ def handle_messages():
                 
                 print(f"[نظام SaaS] تم التقاط معرف الصفحة المستقبلة حياً: {facebook_page_id}")
                 
-                # الاستعلام الفوري في قاعدة البيانات لمطابقة الصفحة مع التاجر
-                merchant_query = supabase.table("merchants").select("*").eq("facebook_page_id", str(facebook_page_id)).single().execute()
-                merchant_data = merchant_query.data
-                
-                if not merchant_data:
-                    print(f"تحذير: وصل طلب لصفحة فيسبوك غير مسجلة في نظامنا: {facebook_page_id}")
-                    return "صفحة غير مسجلة", 200
+                           # [تحديث الاستعلام البرمجي المضمون والمرن]:
+            # نقوم بجلب التجار والبحث بدون دالة .single() الصارمة لتفادي انهيار السيرفر
+            merchant_query = supabase.table("merchants").select("*").execute()
+            merchant_data = None
+            
+            # نقوم بمسح ومطابقة الأرقام برمجياً في الذاكرة لضمان النجاح 100%
+            if merchant_query.data:
+                for merchant in merchant_query.data:
+                    # سحب الرقم من الجدول وتنظيفه من أي فراغات مخفية
+                    db_page_id = str(merchant.get('facebook_page_id', '')).strip()
+                    incoming_page_id = str(facebook_page_id).strip()
                     
-                merchant_id = merchant_data['id']
+                    if db_page_id == incoming_page_id:
+                        merchant_data = merchant
+                        break
+            
+            if not merchant_data:
+                print(f"تحذير: لم نجد تاجر مطرابق في الذاكرة للرقم: {facebook_page_id}")
+                return "صفحة غير مسجلة في النظام", 200
                 
+            merchant_id = merchant_data['id']
+
                 # 1. التقاط الموقع الجغرافي تلقائياً وحساب التوصيل للتاجر الحالي
                 if 'message' in messaging and 'attachments' in messaging['message']:
                     for attachment in messaging['message']['attachments']:
