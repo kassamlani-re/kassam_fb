@@ -19,140 +19,105 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 
-# معرف التاجر الحالي في منصة الـ SaaS يتم سحبه من بيئة التشغيل
-CURRENT_MERCHANT_ID = os.getenv("CURRENT_MERCHANT_ID")
-
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY")) 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = Flask(__name__)
 
 # ----------------------------------------------------
-# الوظيفة الأولى: دالة فحص وحجز المواعيد
+# الوظائف المساعدة الديناميكية (ربط قاعدة البيانات بالتاجر الممرر)
 # ----------------------------------------------------
-def check_and_book_appointment(customer_name: str, customer_phone: str, requested_time_str: str) -> str:
-    """ دالة مخصصة لطلبها بواسطة Gemini لحجز المواعيد في العيادات والمكاتب """
-    try:
-        # تحويل صيغة الوقت القادمة من الذكاء الاصطناعي
-        requested_time = datetime.strptime(requested_time_str, '%Y-%m-%d %H:%M:%S')
-        
-        check_query = supabase.table("appointments") \
-            .select("*") \
-            .eq("merchant_id", CURRENT_MERCHANT_ID) \
-            .eq("appointment_time", requested_time.isoformat()) \
-            .eq("status", "confirmed") \
-            .execute()
-            
-        if len(check_query.data) > 0:
-            return "نعتذر منك، هذا الوقت محجوز مسبقاً. يرجى اختيار وقت آخر."
-        else:
-            booking_data = {
-                "merchant_id": CURRENT_MERCHANT_ID,
-                "customer_phone": customer_phone,
-                "customer_name": customer_name,
-                "appointment_time": requested_time.isoformat(),
-                "status": "confirmed"
-            }
-            supabase.table("appointments").insert(booking_data).execute()
-            return f"تم تأكيد حجزك بنجاح باسم {customer_name} في التاريخ والوقت المحدد: {requested_time_str}."
-    except Exception as e:
-        return f"حدث خطأ أثناء معالجة الحجز: {str(e)}"
-
-# ----------------------------------------------------
-# الوظيفة الثانية: دالة حساب تكلفة التوصيل بناءً على الموقع
-# ----------------------------------------------------
-def calculate_delivery_cost(customer_lat: float, customer_lng: float) -> str:
-    """ دالة مخصصة لطلبها بواسطة Gemini لحساب تكلفة التوصيل للزبون """
-    try:
-        merchant_query = supabase.table("merchants").select("latitude", "longitude", "delivery_fee_per_km").eq("id", CURRENT_MERCHANT_ID).single().execute()
-        merchant_data = merchant_query.data
-        
-        if not merchant_data:
-            return "خطأ: لم يتم العثور على بيانات التاجر في النظام."
-            
-        merchant_coords = (merchant_data['latitude'], merchant_data['longitude'])
-        customer_coords = (customer_lat, customer_lng)
-        
-        # حساب المسافة الحقيقية
-        distance_km = geodesic(merchant_coords, customer_coords).kilometers
-        total_cost = distance_km * float(merchant_data['delivery_fee_per_km'])
-        
-        return f"المسافة التقريبية للمحل هي {round(distance_km, 2)} كم، وتكلفة التوصيل الإجمالية لموقعك هي: {round(total_cost, 2)} دينار."
-    except Exception as e:
-        return f"حدث خطأ أثناء حساب تكلفة التوصيل: {str(e)}"
-
-# ----------------------------------------------------
-# إدارة ذاكرة وسياق المحادثة مع Supabase (Chat History)
-# ----------------------------------------------------
-def save_to_chat_history(sender: str, message_text: str, platform: str = "messenger"):
-    """ دالة لحفظ كل رسالة (سواء من الزبون أو البوت) كسطر مستقل متوافق مع جدولك """
+def save_to_chat_history_dynamic(merchant_id, sender: str, message_text: str):
+    """ حفظ كل رسالة كسطر مستقل مربوط بالتاجر المكتشف تلقائياً """
     try:
         data = {
-            "merchant_id": CURRENT_MERCHANT_ID,
-            "sender": sender,
-            "message_text": message_text,
-            "platform": platform
+            "merchant_id": merchant_id, 
+            "sender": sender, 
+            "message_text": message_text, 
+            "platform": "messenger"
         }
         supabase.table("chat_history").insert(data).execute()
-    except Exception as e:
-        print("خطأ أثناء حفظ سجل المحادثة:", e)
+    except Exception as e: 
+        print("خطأ في حفظ سجل المحادثة:", e)
 
-def get_chat_context(sender_id: str) -> list:
-    """ جلب التاريخ وتصفيته برمجياً ليفهمه Gemini بدون تداخل أدوار """
+def get_chat_context(sender_id: str, merchant_id: str) -> list:
+    """ جلب الذاكرة وتصفيها برمجياً حسب معرف التاجر لـ Gemini """
     try:
         query = supabase.table("chat_history") \
             .select("sender, message_text") \
-            .eq("merchant_id", CURRENT_MERCHANT_ID) \
+            .eq("merchant_id", merchant_id) \
             .eq("platform", "messenger") \
             .order("created_at", ascending=False) \
             .limit(6) \
             .execute()
-            
-        history_data = query.data
         contents = []
-        
-        for msg in reversed(history_data):
+        for msg in reversed(query.data):
             role = "user" if msg['sender'] != "bot" else "model"
-            contents.append(types.Content(
-                role=role,
-                parts=[types.Part.from_text(text=str(msg['message_text']))]
-            ))
+            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=str(msg['message_text']))]))
         return contents
-    except Exception as e:
-        print("خطأ أثناء جلب سياق المحادثة:", e)
+    except Exception as e: 
+        print("خطأ في سحب الذاكرة:", e)
         return []
-
-def process_message_with_gemini(sender_id, user_message):
-    """ إرسال سياق نظيف وإجبار الموديل على الالتزام ببيانات جدول merchants وتفعيل الأدوات """
+def calculate_delivery_cost_dynamic(merchant_data, customer_lat: float, customer_lng: float) -> str:
+    """ حساب المسافة والتوصيل من إحداثيات محل التاجر المسترجع حياً """
     try:
-        # جلب البيانات الحية من الجدول لتغذية عقل البوت بالحقائق
-        merchant_name = "المحل"
-        merchant_phone = "غير مسجل"
-        business_type = "تجاري"
-        try:
-            merchant_query = supabase.table("merchants").select("business_name, business_type, phone_number").eq("id", CURRENT_MERCHANT_ID).single().execute()
-            if merchant_query.data:
-                merchant_name = merchant_query.data.get('business_name', 'المحل')
-                merchant_phone = merchant_query.data.get('phone_number', 'غير مسجل')
-                business_type = merchant_query.data.get('business_type', 'خدماتي')
-        except Exception as err:
-            print("تحذير: تعذر جلب بيانات التاجر الحقيقية:", err)
+        merchant_coords = (merchant_data['latitude'], merchant_data['longitude'])
+        distance_km = geodesic(merchant_coords, (customer_lat, customer_lng)).kilometers
+        total_cost = distance_km * float(merchant_data['delivery_fee_per_km'])
+        return f"المسافة التقريبية للمحل هي {round(distance_km, 2)} كم، وتكلفة التوصيل الإجمالية لموقعك هي: {round(total_cost, 2)} دينار."
+    except Exception as e: 
+        return f"خطأ في حساب تكلفة التوصيل: {str(e)}"
 
-        # جلب الذاكرة الصافية من جدول chat_history
-        history_contents = get_chat_context(sender_id)
+def check_and_book_appointment_dynamic(merchant_id, customer_name: str, customer_phone: str, requested_time_str: str) -> str:
+    """ حجز المواعيد في جدول التاجر الصحيح ومنع التضارب زمنياً """
+    try:
+        requested_time = datetime.strptime(requested_time_str, '%Y-%m-%d %H:%M:%S')
+        check_query = supabase.table("appointments") \
+            .select("*") \
+            .eq("merchant_id", merchant_id) \
+            .eq("appointment_time", requested_time.isoformat()) \
+            .eq("status", "confirmed") \
+            .execute()
+            
+        if len(check_query.data) > 0: 
+            return "نعتذر منك، هذا الوقت محجوز مسبقاً. يرجى اختيار وقت آخر."
+            
+        booking_data = {
+            "merchant_id": merchant_id, 
+            "customer_phone": customer_phone, 
+            "customer_name": customer_name, 
+            "appointment_time": requested_time.isoformat(), 
+            "status": "confirmed"
+        }
+        supabase.table("appointments").insert(booking_data).execute()
+        return f"تم تأكيد حجزك بنجاح باسم {customer_name} في الوقت والتاريخ المحدد: {requested_time_str}."
+    except Exception as e: 
+        return f"خطأ أثناء معالجة حجز الموعد: {str(e)}"
+# ----------------------------------------------------
+# عقل البوت والتكامل مع Gemini والوظائف الذكية
+# ----------------------------------------------------
+def process_message_with_gemini(sender_id, user_message, merchant_data):
+    """ إرسال سياق نظيف وإجبار الموديل على الالتزام ببيانات التاجر المستخرج تلقائياً """
+    try:
+        merchant_id = merchant_data.get('id')
+        merchant_name = merchant_data.get('business_name', 'المحل')
+        merchant_phone = merchant_data.get('phone_number', 'غير مسجل')
+        business_type = merchant_data.get('business_type', 'خدماتي')
+
+        # جلب الذاكرة الصافية للزبون مع هذا التاجر بالذات
+        history_contents = get_chat_context(sender_id, merchant_id)
         
-        # إضافة الرسالة الحالية الجديدة للزبون
         history_contents.append(types.Content(
             role="user",
             parts=[types.Part.from_text(text=str(user_message))]
         ))
         
-        # [التصحيح]: إعادة تعريف الأدوات والوظائف الذكية المتاحة لـ Gemini
+        # تفعيل الأدوات والوظائف الذكية لـ Gemini
         tools = [
             types.Tool(
                 function_declarations=[
                     types.FunctionDeclaration(
-                        name="check_and_book_appointment",
+                        name="check_and_book_appointment_dynamic",
                         description="تستخدم لحجز موعد جديد للزبون في العيادة أو المكتب بعد أخذ اسمه، هاتفه، والوقت المطلوب بصيغة YYYY-MM-DD HH:MM:SS.",
                         parameters=types.Schema(
                             type=types.Type.OBJECT,
@@ -165,7 +130,7 @@ def process_message_with_gemini(sender_id, user_message):
                         )
                     ),
                     types.FunctionDeclaration(
-                        name="calculate_delivery_cost",
+                        name="calculate_delivery_cost_dynamic",
                         description="تستخدم لحساب المسافة وتكلفة التوصيل الإجمالية للزبون بناءً على إحداثيات موقعه الجغرافي.",
                         parameters=types.Schema(
                             type=types.Type.OBJECT,
@@ -191,7 +156,7 @@ def process_message_with_gemini(sender_id, user_message):
         
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
-            tools=tools, # تم تفعيل الأدوات هنا برمجياً
+            tools=tools,
             temperature=0.1,
             max_output_tokens=200
         )
@@ -202,24 +167,22 @@ def process_message_with_gemini(sender_id, user_message):
             config=config
         )
         
-        # تنفيذ الاستدعاء الذكي في حال قرر Gemini تشغيل أي دالة
         if response.function_calls:
             for call in response.function_calls:
-                if call.name == "check_and_book_appointment":
+                if call.name == "check_and_book_appointment_dynamic":
                     args = call.args
-                    return check_and_book_appointment(args['customer_name'], args['customer_phone'], args['requested_time_str'])
-                elif call.name == "calculate_delivery_cost":
+                    return check_and_book_appointment_dynamic(merchant_id, args['customer_name'], args['customer_phone'], args['requested_time_str'])
+                elif call.name == "calculate_delivery_cost_dynamic":
                     args = call.args
-                    return calculate_delivery_cost(args['customer_lat'], args['customer_lng'])
+                    return calculate_delivery_cost_dynamic(merchant_data, args['customer_lat'], args['customer_lng'])
         
         return response.text if response.text else "مرحباً بك، كيف يمكنني مساعدتك؟"
         
     except Exception as e:
         print("خطأ في المعالجة عبر Gemini:", e)
         return "معذرةً، حدث خطأ مؤقت في نظام المعالجة الذكي."
-
 # ----------------------------------------------------
-# الوظيفة الخامسة: مسارات استقبال وتحقق ويب هوك ميتا الموحد
+# مسارات استقبال وتحقق ويب هوك ميتا الموحد
 # ----------------------------------------------------
 @app.route('/', methods=['GET'])
 def home():
@@ -242,20 +205,32 @@ def verify_webhook():
 
 @app.route('/webhook', methods=['POST'])
 def handle_messages():
-    """ استقبال الرسائل والمواقع الجغرافية ومعالجتها بالذكاء الاصطناعي """
+    """ استقبال الرسائل والمواقع الجغرافية والتعرف على التاجر ديناميكياً """
     data = request.get_json()
-    
     if not data:
         return "بيانات فارغة", 400
         
     if data.get('object') in ['page', 'instagram']:
         try:
             entry = data['entry'][0]
+            # التقاط معرف الصفحة التي استقبلت الرسالة الآن تلقائياً
+            facebook_page_id = entry.get('id') 
+            
+            # الاستعلام الفوري في قاعدة البيانات لمعرفة من هو التاجر صاحب هذه الصفحة
+            merchant_query = supabase.table("merchants").select("*").eq("facebook_page_id", str(facebook_page_id)).single().execute()
+            merchant_data = merchant_query.data
+            
+            if not merchant_data:
+                print(f"تحذير: وصل طلب لصفحة فيسبوك غير مسجلة في نظامنا: {facebook_page_id}")
+                return "صفحة غير مسجلة", 200
+                
+            merchant_id = merchant_data['id']
+            
             if 'messaging' in entry:
                 messaging = entry['messaging'][0]
-                sender_id = messaging['sender']['id']  # معرف حساب الزبون الفريد
+                sender_id = messaging['sender']['id']
                 
-                # 1. حالة استقبال موقع جغرافي حقيقي من الزبون (Send Location)
+                # 1. التقاط الموقع الجغرافي تلقائياً وحساب التوصيل للتاجر الحالي
                 if 'message' in messaging and 'attachments' in messaging['message']:
                     for attachment in messaging['message']['attachments']:
                         if attachment.get('type') == 'location':
@@ -263,32 +238,21 @@ def handle_messages():
                             lat = coordinates['lat']
                             lng = coordinates['long']
                             
-                            print(f"[ماسنجر] استلمنا موقعاً جغرافياً حياً من {sender_id}: Lat={lat}, Lng={lng}")
+                            save_to_chat_history_dynamic(merchant_id, sender=sender_id, message_text="[أرسل موقعه الجغرافي]")
+                            reply_text = calculate_delivery_cost_dynamic(merchant_data, lat, lng)
                             
-                            # تسجيل الحدث في الذاكرة وحساب التكلفة فوراً بالدالة الجغرافية
-                            save_to_chat_history(sender=sender_id, message_text="[أرسل موقعه الجغرافي]")
-                            reply_text = calculate_delivery_cost(lat, lng)
-                            
-                            save_to_chat_history(sender="bot", message_text=reply_text)
+                            save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
                             send_messenger_reply(sender_id, reply_text)
-                            return "تم حساب التوصيل بنجاح", 200
+                            return "تم المعالجة", 200
 
-                # 2. حالة استقبال رسالة نصية عادية من الزبون
+                # 2. استقبال الرسائل النصية العادية وتمريرها لعقل Gemini مع بيانات التاجر التلقائية
                 if 'message' in messaging and 'text' in messaging['message']:
-                    message_text = messaging['message']['text']  # نص رسالة الزبون
+                    message_text = messaging['message']['text']
                     
-                    print(f"[ماسنجر] رسالة نصية جديدة من {sender_id}: {message_text}")
+                    save_to_chat_history_dynamic(merchant_id, sender=sender_id, message_text=message_text)
+                    reply_text = process_message_with_gemini(sender_id, message_text, merchant_data)
                     
-                    # أ) حفظ رسالة الزبون الواردة أولاً في قاعدة البيانات
-                    save_to_chat_history(sender=sender_id, message_text=message_text)
-                    
-                    # ب) تمرير الرسالة لعقل Gemini لتوليد الرد الذكي أو استدعاء الدوال
-                    reply_text = process_message_with_gemini(sender_id, message_text)
-                    
-                    # ج) حفظ الرد الصادر من البوت في جدول قاعدة البيانات باسم "bot"
-                    save_to_chat_history(sender="bot", message_text=reply_text)
-                    
-                    # د) إرسال الرد النهائي عبر سيرفرات ميتا لهاتف المستخدم
+                    save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
                     send_messenger_reply(sender_id, reply_text)
                     
         except Exception as e:
@@ -298,13 +262,11 @@ def handle_messages():
 
 def send_messenger_reply(recipient_id, text_reply):
     """ دالة ترسل الرد المكتوب إلى حساب الزبون في ماسنجر عبر الرابط الرسمي الصحيح ومجزأ لحمايته """
-    
     url = "https" + "://graph." + "facebook." + "com/v21.0/" + "me/messages"
     
     query_params = {
         "access_token": PAGE_ACCESS_TOKEN
     }
-    
     payload = {
         "recipient": {"id": recipient_id},
         "message": {"text": text_reply}
@@ -313,12 +275,10 @@ def send_messenger_reply(recipient_id, text_reply):
     
     try:
         response = requests.post(url, json=payload, headers=headers, params=query_params)
-        
         if response.status_code == 200:
             print("==> تم إرسال الرد العكسي للزبون عبر فيسبوك بنجاح! 🎉")
         else:
             print(f"رفض الإرسال من طرف ميتا (كود {response.status_code}): {response.text}")
-            
     except Exception as e:
         print("حدث خطأ أثناء محاولة الاتصال بخوادم ميتا الرسمية:", e)
 
