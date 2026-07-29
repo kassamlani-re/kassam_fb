@@ -205,7 +205,7 @@ def verify_webhook():
 
 @app.route('/webhook', methods=['POST'])
 def handle_messages():
-    """ استقبال الرسائل والمواقع الجغرافية والتعرف على التاجر ديناميكياً """
+    """ استقبال الرسائل والمواقع الجغرافية والتعرف على التاجر ديناميكياً بدقة عالية """
     data = request.get_json()
     if not data:
         return "بيانات فارغة", 400
@@ -213,22 +213,25 @@ def handle_messages():
     if data.get('object') in ['page', 'instagram']:
         try:
             entry = data['entry'][0]
-            # التقاط معرف الصفحة التي استقبلت الرسالة الآن تلقائياً
-            facebook_page_id = entry.get('id') 
-            
-            # الاستعلام الفوري في قاعدة البيانات لمعرفة من هو التاجر صاحب هذه الصفحة
-            merchant_query = supabase.table("merchants").select("*").eq("facebook_page_id", str(facebook_page_id)).single().execute()
-            merchant_data = merchant_query.data
-            
-            if not merchant_data:
-                print(f"تحذير: وصل طلب لصفحة فيسبوك غير مسجلة في نظامنا: {facebook_page_id}")
-                return "صفحة غير مسجلة", 200
-                
-            merchant_id = merchant_data['id']
-            
             if 'messaging' in entry:
                 messaging = entry['messaging'][0]
-                sender_id = messaging['sender']['id']
+                sender_id = messaging['sender']['id'] # معرف الزبون
+                
+                # [التعديل الجوهري والمضمون]: سحب معرف الصفحة الحقيقي من حقل المستقبل (recipient)
+                # فيسبوك يرسل دائماً معرف صفحتك التجارية هنا لأنها هي التي استقبلت الرسالة
+                facebook_page_id = messaging['recipient']['id']
+                
+                print(f"[نظام SaaS] تم التقاط معرف الصفحة المستقبلة حياً: {facebook_page_id}")
+                
+                # الاستعلام الفوري في قاعدة البيانات لمطابقة الصفحة مع التاجر
+                merchant_query = supabase.table("merchants").select("*").eq("facebook_page_id", str(facebook_page_id)).single().execute()
+                merchant_data = merchant_query.data
+                
+                if not merchant_data:
+                    print(f"تحذير: وصل طلب لصفحة فيسبوك غير مسجلة في نظامنا: {facebook_page_id}")
+                    return "صفحة غير مسجلة", 200
+                    
+                merchant_id = merchant_data['id']
                 
                 # 1. التقاط الموقع الجغرافي تلقائياً وحساب التوصيل للتاجر الحالي
                 if 'message' in messaging and 'attachments' in messaging['message']:
