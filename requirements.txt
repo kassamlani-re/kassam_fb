@@ -1,4 +1,4 @@
-annotated-types==0.8.0
+gunicorn==23.0.0annotated-types==0.8.0
 anyio==4.14.2
 blinker==1.9.0
 certifi==2026.7.22
@@ -49,3 +49,4 @@ urllib3==2.7.0
 websockets==15.0.1
 Werkzeug==3.1.8
 yarl==1.24.5
+gunicorn==23.0.0
