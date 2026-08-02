@@ -98,8 +98,6 @@ def check_and_book_appointment_dynamic(merchant_id, customer_name: str, customer
     """ حجز المواعيد مع تنظيف وتأمين صيغ الوقت نصياً لمنع التضارب وانهيار السيرفر """
     try:
         clean_time_str = requested_time_str.strip()
-        
-        # تحليل مرن لأكثر من صيغة تاريخ قد يولدها الذكاء الاصطناعي
         correct_datetime = None
         for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M'):
             try:
@@ -111,7 +109,6 @@ def check_and_book_appointment_dynamic(merchant_id, customer_name: str, customer
         if not correct_datetime:
             return "عذراً، لم أستطع ضبط صيغة الوقت بشكل صحيح. يرجى كتابة التاريخ والوقت بوضوح مثل: 2026-08-05 14:00."
 
-        # التحقق الصارم من تضارب الموعد في جدول التاجر الحالي
         check_query = supabase.table("appointments") \
             .select("*") \
             .eq("merchant_id", merchant_id) \
@@ -135,20 +132,44 @@ def check_and_book_appointment_dynamic(merchant_id, customer_name: str, customer
         return f"خطأ أثناء معالجة حجز الموعد: {str(e)}"
 
 # ----------------------------------------------------
-# عقل البوت والتكامل مع Gemini والوظائف الذكية
+# عقل البوت والتكامل مع Gemini والوظائف الذكية المحدثة للسلع
 # ----------------------------------------------------
-def process_message_with_gemini(sender_id, user_message, merchant_data):
-    """ إرسال سياق نظيف وإجبار الموديل على الالتزام الصارم ببيانات التاجر وحالة التوصيل حياً """
+def get_merchant_products_live(merchant_id) -> list:
+    """ سحب قائمة السلع الحية الخاصة بهذا التاجر بالذات من جدول products المشترك """
+    try:
+        query = supabase.table("products").select("*").eq("merchant_id", merchant_id).execute()
+        return query.data if query.data else []
+    except Exception as e:
+        print("خطأ في سحب المنتجات من قاعدة البيانات:", e)
+        return []
+
+def process_message_with_gemini(sender_id, user_message, merchant_data, image_bytes_data=None):
+    """ إرسال سياق نظيف ودعم قراءة الصور (Vision) ومطابقتها بالسلع الحية للتاجر """
     try:
         merchant_id = merchant_data.get('id')
         merchant_name = merchant_data.get('business_name', 'المحل')
         merchant_phone = merchant_data.get('phone_number', 'غير مسجل')
         business_type = merchant_data.get('business_type', 'خدماتي')
-        
         provides_delivery = merchant_data.get('provides_delivery', False)
 
+        # 1. سحب السلع والأسعار الحية للتاجر الحالي من جدول products الجديد
+        live_products = get_merchant_products_live(merchant_id)
+        products_context_str = json.dumps(live_products, ensure_ascii=False)
+
+        # 2. جلب الذاكرة السياقية للرسائل
         history_contents = get_chat_context(sender_id, merchant_id)
-        history_contents.append(types.Content(role="user", parts=[types.Part.from_text(text=str(user_message))]))
+        
+        # 3. دعم معالجة الصور والنصوص معاً (Multimodal)
+        user_parts = []
+        if image_bytes_data:
+            # إذا أرسل الزبون صورة إعلان، نمررها للبايتات الخاصة بـ Gemini ليفحصها حياً
+            user_parts.append(types.Part.from_bytes(data=image_bytes_data, mime_type="image/jpeg"))
+            user_parts.append(types.Part.from_text(text="افحص هذه الصورة وتعرف على السلعة الموجودة فيها وأعط الزبون سعرها من سياق المنتجات."))
+        
+        if user_message:
+            user_parts.append(types.Part.from_text(text=str(user_message)))
+            
+        history_contents.append(types.Content(role="user", parts=user_parts))
         
         tools = [
             types.Tool(
@@ -184,29 +205,28 @@ def process_message_with_gemini(sender_id, user_message, merchant_data):
         
         if provides_delivery:
             delivery_instruction = (
-                "نحن نوفر خدمة التوصيل للموقع. إذا استفسر الزبون عن التوصيل أو سعره، "
-                "يجب أن تجيبه حرفياً بالصيغة التالية: 'نعم، التوصيل متوفر. يمكنك إضافة موقعك الدقيق من خلال الضغط على زر مشاركة الموقع لتصلنا إحداثياتك تلقائياً وحساب التكلفة بدقة.' "
-                "ممنوع تماماً اختراع أسعار توصيل، وممنوع طلب كتابة أرقام إحداثيات أو عناوين نصية يدوياً."
+                "نحن نوفر خدمة التوصيل. إذا استفسر الزبون عن التوصيل، قل له: "
+                "'نعم، التوصيل متوفر. يمكنك إضافة موقعك الدقيق من خلال الضغط على زر مشاركة الموقع لتصلنا إحداثياتك تلقائياً.'"
             )
         else:
-            delivery_instruction = (
-                "نحن لا نوفر خدمة التوصيل نهائياً في هذا المحل. إذا سألك الزبون عن التوصيل أو سعره، "
-                "اعتذر له بلطف وبوضوح تام وأخبره أن الخدمة غير متوفرة حالياً وعليه الاستلام من مقرنا فقط."
-            )
+            delivery_instruction = "نحن لا نوفر خدمة التوصيل نهائياً في هذا المحل، اعتذر للزبون بلطف إذا سألك عنها."
         
         system_instruction = (
             f"أنت المساعد الافتراضي الآلي لصفحة ({merchant_name}) المتخصصة في ({business_type}). "
             f"معلومات التواصل الحقيقية والوحيدة الخاصة بنا هي: رقم الهاتف الحركي هو ({merchant_phone}). "
-            f"التزم بهذا الرقم حرفياً إذا سألك الزبون عن الهاتف، وممنوع اختراع أو تخمين أي أرقام أخرى نهائياً. "
+            f"إليك قائمة المنتجات والسلع الحقيقية والحية المتوفرة في محلنا الآن بالأسعار والصور: ({products_context_str}). "
+            "التزم بهذه القائمة حرفياً! إذا سألك الزبون عن سعر سلعة أو اسمها، أجب بناءً عليها فقط وممنوع اختراع أسعار. "
+            "إذا طلب الزبون قائمة السلع أو المنيو، يجب أن تذكر في ردك جملة (إليك قائمة المنتجات الخاصة بنا:) ليقوم النظام بعرضها تلقائياً. "
+            "إذا سأل الزبون عن منتج محدد نصاً أو عبر صورة أرسلها، أجب بالسعر من القائمة واكتب في نهاية رسالتك عبارة (إليك كارت السلعة المعنية:) ليقوم السيرفر بإرسال كارت السلعة المصور فوراً للزبون. "
             f"{delivery_instruction} "
-            "أجب باختصار شديد، بأسلوب خدمة عملاء محترف وودود، ولا تذكر جوجل أو منصة SaaS في ردودك."
+            "أجب باختصار شديد وبأسلوب محترف، ولا تذكر جوجل أو منصة SaaS."
         )
         
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             tools=tools,
-            temperature=0.1,  # حماية صارمة لمنع التخريف الرقمي
-            max_output_tokens=200
+            temperature=0.1,
+            max_output_tokens=250
         )
         
         response = gemini_client.models.generate_content(
@@ -221,8 +241,7 @@ def process_message_with_gemini(sender_id, user_message, merchant_data):
                     args = call.args
                     return check_and_book_appointment_dynamic(merchant_id, args['customer_name'], args['customer_phone'], args['requested_time_str'])
                 elif call.name == "calculate_delivery_cost_dynamic":
-                    if not provides_delivery:
-                        return "معذرةً، خدمة التوصيل غير متوفرة لدينا حالياً."
+                    if not provides_delivery: return "معذرةً، خدمة التوصيل غير متوفرة لدينا حالياً."
                     args = call.args
                     return calculate_delivery_cost_dynamic(merchant_data, args['customer_lat'], args['customer_lng'])
         
@@ -231,8 +250,9 @@ def process_message_with_gemini(sender_id, user_message, merchant_data):
     except Exception as e:
         print("خطأ في المعالجة عبر Gemini:", e)
         return "معذرةً، حدث خطأ مؤقت في نظام المعالجة الذكي."
+
 # ----------------------------------------------------
-# ميزات الـ Sprint الجديد: مؤشر الكتابة وأزرار فيسبوك التفاعلية والسلع الرسومية
+# ميزات الـ Sprint الجديد: مؤشرات الكتابة والقوالب الرسومية الديناميكية للسلع من قاعدة البيانات
 # ----------------------------------------------------
 
 def send_facebook_action_dynamic(recipient_id, access_token, action_type="typing_on"):
@@ -258,11 +278,7 @@ def send_location_button_dynamic(recipient_id, access_token, text_message):
         "recipient": {"id": recipient_id},
         "message": {
             "text": text_message,
-            "quick_replies": [
-                {
-                    "content_type": "location"
-                }
-            ]
+            "quick_replies": [{"content_type": "location"}]
         }
     }
     headers = {"Content-Type": "application/json"}
@@ -272,11 +288,53 @@ def send_location_button_dynamic(recipient_id, access_token, text_message):
         print("خطأ في إرسال زر مشاركة الموقع التفاعلي:", e)
 
 
-def send_products_carousel_dynamic(recipient_id, access_token):
-    """ إرسال مصفوفة كروت المنتجات والصور للسلع بشكل جذاب وبأعلى حماية من الحجب وقص الروابط """
+def send_dynamic_products_carousel(recipient_id, access_token, merchant_id):
+    """ سحب السلع حياً من جدول products وعرضها كمنيو متحرك بالصور والأسعار لتاجر الـ SaaS الحالي """
+    try:
+        # استعلام حي لجلب منتجات هذا التاجر بالتحديد من قاعدة البيانات
+        query = supabase.table("products").select("*").eq("merchant_id", merchant_id).limit(10).execute()
+        products_list = query.data if query.data else []
+        
+        if not products_list:
+            return  # إذا لم يضف التاجر منتجات بعد، لا نرسل قالباً فارغاً
+            
+        elements = []
+        for prod in products_list:
+            elements.append({
+                "title": str(prod.get('title', 'سلعة متوفرة')),
+                "image_url": str(prod.get('image_url', '')),
+                "subtitle": f"السعر: {prod.get('price', 0)} دينار | {prod.get('subtitle', '')}",
+                "buttons": [
+                    {
+                        "type": "postback",
+                        "title": "🛒 طلب السلعة",
+                        "payload": f"BUY_PRODUCT_{prod.get('id')}"
+                    }
+                ]
+            })
+            
+        url = "https" + "://" + "graph" + "." + "facebook" + "." + "com" + "/v21.0" + "/me" + "/messages"
+        payload = {
+            "recipient": {"id": recipient_id},
+            "message": {
+                "attachment": {
+                    "type": "template",
+                    "payload": {
+                        "template_type": "generic",
+                        "elements": elements
+                    }
+                }
+            }
+        }
+        requests.post(url, json=payload, headers={"Content-Type": "application/json"}, params={"access_token": access_token})
+        print(f"==> تم عرض المنيو الديناميكي حياً من قاعدة البيانات لتاجر الـ SaaS رقم: {merchant_id}")
+    except Exception as e:
+        print("خطأ في بناء أو إرسال المنيو الديناميكي المصور:", e)
+
+
+def send_single_product_card(recipient_id, access_token, product_title, image_url, price, subtitle, product_id):
+    """ إرسال كارت مصور لمنتج واحد فقط عندما يسأل الزبون عنه نصاً أو عبر إرسال صوره إعلان """
     url = "https" + "://" + "graph" + "." + "facebook" + "." + "com" + "/v21.0" + "/me" + "/messages"
-    query_params = {"access_token": access_token}
-    
     payload = {
         "recipient": {"id": recipient_id},
         "message": {
@@ -284,43 +342,20 @@ def send_products_carousel_dynamic(recipient_id, access_token):
                 "type": "template",
                 "payload": {
                     "template_type": "generic",
-                    "elements": [
-                        {
-                            "title": "وجبة البرجر العملاق 🍔",
-                            "image_url": "https" + "://" + "images" + "." + "unsplash" + "." + "com" + "/photo-1568901346375-23c9450c58cd?q=80&w=500",
-                            "subtitle": "السعر: 450 دينار - متوفرة للتوصيل الفوري",
-                            "buttons": [
-                                {
-                                    "type": "postback",
-                                    "title": "🛒 اطلب الآن",
-                                    "payload": "ORDER_BURGER"
-                                }
-                            ]
-                        },
-                        {
-                            "title": "وجبة البيتزا العائلية 🍕",
-                            "image_url": "https" + "://" + "images" + "." + "unsplash" + "." + "com" + "/photo-1513104890138-7c749659a591?q=80&w=500",
-                            "subtitle": "السعر: 800 دينار - بحجم عائلي كبير",
-                            "buttons": [
-                                {
-                                    "type": "postback",
-                                    "title": "🛒 اطلب الآن",
-                                    "payload": "ORDER_PIZZA"
-                                }
-                            ]
-                        }
-                    ]
+                    "elements": [{
+                        "title": str(product_title),
+                        "image_url": str(image_url),
+                        "subtitle": f"السعر الحالي: {price} دينار | {subtitle}",
+                        "buttons": [{"type": "postback", "title": "🛒 اطلبها الآن", "payload": f"BUY_PRODUCT_{product_id}"}]
+                    }]
                 }
             }
         }
     }
-    headers = {"Content-Type": "application/json"}
     try:
-        response = requests.post(url, json=payload, headers=headers, params=query_params)
-        if response.status_code != 200:
-            print(f"رفض إرسال الكروت من ميتا: {response.text}")
+        requests.post(url, json=payload, headers={"Content-Type": "application/json"}, params={"access_token": access_token})
     except Exception as e:
-        print("حدث خطأ أثناء محاولة إرسال كروت المنتجات:", e)
+        print("خطأ في إرسال كارت السلعة المفردة:", e)
 
 
 def send_messenger_reply_dynamic(recipient_id, text_reply, access_token):
@@ -339,24 +374,28 @@ def send_messenger_reply_dynamic(recipient_id, text_reply, access_token):
     except Exception as e:
         print("حدث خطأ أثناء محاولة الاتصال بخوادم ميتا الرسمية:", e)
 # ----------------------------------------------------
-# دالة معالجة الرسائل والذكاء الاصطناعي في الخلفية (Background Worker)
+# دالة معالجة الرسائل والذكاء الاصطناعي في الخلفية (Background Worker متعدد الوسائط)
 # ----------------------------------------------------
 def background_message_processor(messaging, merchant_data):
-    """ معالجة الرسالة في الخلفية المستقلة مع تفعيل ذكاء إرسال السلع الرسومية والصور تلقائياً """
+    """ معالجة الرسائل النصية والصور في الخلفية ودعم الذكاء الرسومي الحي للسلع """
     try:
         sender_id = messaging['sender']['id']
         merchant_id = merchant_data['id']
         
-        # فك تشفير التوكن ديناميكياً لحماية الـ SaaS
+        # فك تشفير توكن التاجر حياً لحماية الـ SaaS
         encrypted_token = merchant_data.get('page_access_token')
         merchant_token = decrypt_token(encrypted_token) if encrypted_token else PAGE_ACCESS_TOKEN
 
-        # تشغيل مؤشر الكتابة فوراً بمجرد بدء المعالجة
+        # تشغيل مؤشر الكتابة فوراً
         send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_on")
 
-        # 1. التقاط الموقع الجغرافي التلقائي وحساب التوصيل للتاجر الحالي
+        image_bytes_data = None
+        message_text = ""
+
+        # 1. التقاط الصور والمرفقات (مثل صورة إعلان السلعة)
         if 'message' in messaging and 'attachments' in messaging['message']:
             for attachment in messaging['message']['attachments']:
+                # أ) إذا كان المرفق موقع جغرافي تلقائي، نحسب التوصيل فوراً
                 if attachment.get('type') == 'location':
                     coordinates = attachment['payload']['coordinates']
                     lat = coordinates['lat']
@@ -366,36 +405,73 @@ def background_message_processor(messaging, merchant_data):
                     reply_text = calculate_delivery_cost_dynamic(merchant_data, lat, lng)
                     
                     save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
-                    
-                    # إغلاق مؤشر الكتابة وإرسال الرد المالي النهائي
                     send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_off")
                     send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
                     return
+                
+                # ب) إذا كان المرفق صورة، نقوم بتحميلها كبايتات ليفحصها Gemini حياً
+                elif attachment.get('type') == 'image':
+                    image_url = attachment['payload']['url']
+                    try:
+                        img_response = requests.get(image_url)
+                        if img_response.status_code == 200:
+                            image_bytes_data = img_response.content
+                            save_to_chat_history_dynamic(merchant_id, sender=sender_id, message_text="[أرسل صورة إعلان/منتج]")
+                    except Exception as img_err:
+                        print("خطأ أثناء تحميل بايتات الصورة من فيسبوك:", img_err)
 
-        # 2. استقبال الرسائل النصية وتمريرها لعقل Gemini مع بيانات التاجر التلقائية
+        # 2. التقاط النص العادي إذا وجد مصاحباً للصورة أو منفرداً
         if 'message' in messaging and 'text' in messaging['message']:
             message_text = messaging['message']['text']
-            
-            save_to_chat_history_dynamic(merchant_id, sender=sender_id, message_text=message_text)
-            reply_text = process_message_with_gemini(sender_id, message_text, merchant_data)
+            if not image_bytes_data:
+                save_to_chat_history_dynamic(merchant_id, sender=sender_id, message_text=message_text)
+
+        # 3. تمرير المعطيات (النص، وبايتات الصورة إن وجدت) إلى عقل Gemini متعدد الوسائط
+        if message_text or image_bytes_data:
+            reply_text = process_message_with_gemini(sender_id, message_text, merchant_data, image_bytes_data)
             
             save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
             
-            # إغلاق مؤشر الكتابة قبل الإرسال العكسي للزبون
+            # إغلاق مؤشر الكتابة قبل الإرسال للزبون
             send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_off")
             
-            # [التقاط ذكي للمنتجات]: إذا كان الرد يحتوي على منيو أو منتجات، نرسل الكروت الرسومية فوراً تحت النص
-            if "قائمة المنتجات" in reply_text or "المنيو" in reply_text or "قائمة السلع" in reply_text:
+            # [السيناريو 1: طلب المنيو أو السلع بالكامل ديناميكياً]
+            if "إليك قائمة المنتجات الخاصة بنا" in reply_text or "المنيو" in reply_text:
                 send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
-                send_products_carousel_dynamic(sender_id, merchant_token)
-            # ذكاء التوصيل الجغرافي
+                send_dynamic_products_carousel(recipient_id=sender_id, access_token=merchant_token, merchant_id=merchant_id)
+            
+            # [السيناريو 2: استفسار عن سلعة محددة نصاً أو عبر صورة إعلان]
+            elif "إليك كارت السلعة المعنية" in reply_text:
+                send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
+                
+                # استخراج السلعة الحية المطابقة من جدول المنتجات لإرسال كارتها المصور فوراً
+                # سنقوم بالبحث برمجياً في سلع التاجر الحالية لمطابقة ما وجده Gemini
+                live_prods = supabase.table("products").select("*").eq("merchant_id", merchant_id).execute().data
+                if live_prods:
+                    for p in live_prods:
+                        # إذا ذكر الموديل اسم المنتج في الرد، نرسل كارت هذا المنتج بالتحديد
+                        if str(p.get('title')) in reply_text or (message_text and str(p.get('title')) in message_text):
+                            send_single_product_card(
+                                recipient_id=sender_id,
+                                access_token=merchant_token,
+                                product_title=p.get('title'),
+                                image_url=p.get('image_url'),
+                                price=p.get('price'),
+                                subtitle=p.get('subtitle'),
+                                product_id=p.get('id')
+                            )
+                            break
+            
+            # [السيناريو 3: طلب التوصيل الجغرافي]
             elif "زر مشاركة الموقع" in reply_text or "لتصلنا إحداثياتك تلقائياً" in reply_text:
                 send_location_button_dynamic(sender_id, merchant_token, reply_text)
+            
+            # [السيناريو 4: رد نصي اعتيادي]
             else:
                 send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
                 
     except Exception as e:
-        print("خطأ في معالجة الخلفية المستقلة:", e)
+        print("خطأ في معالجة الخلفية متعددة الوسائط:", e)
 
 
 # ----------------------------------------------------
@@ -434,11 +510,9 @@ def handle_messages():
             entry_list = data['entry']
             for entry in entry_list:
                 if 'messaging' in entry:
-                    # سحب مصفوفة الرسائل بالكامل بشكل آمن وفقاً لبروتوكول ميتا لمنع الـ Crash
                     for messaging_event in entry['messaging']:
                         facebook_page_id = messaging_event['recipient']['id']
                         
-                        # مطابقة التاجر في الذاكرة لتفادي انهيار السيرفر
                         merchant_query = supabase.table("merchants").select("*").execute()
                         merchant_data = None
                         
