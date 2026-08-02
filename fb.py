@@ -1,5 +1,6 @@
 import os
 import json
+import threading
 from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
@@ -20,7 +21,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 
-# جلب مفتاح التشفير السري الموحد المحمي في سيرفر Render لخدمة كل التجار
+# جلب مفتاح التشفير السري الموحد المحمي في سيرفر Render لخدمة كل التجار بأمان
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 if not ENCRYPTION_KEY:
     raise ValueError("خطأ حرج: لم يتم العثور على ENCRYPTION_KEY في متغيرات البيئة بسيرفر Render!")
@@ -50,7 +51,7 @@ def decrypt_token(encrypted_token: str) -> str:
         return ""
 
 # ----------------------------------------------------
-# الوظائف المساعدة الديناميكية المعزولة لكل تاجر
+# الوظائف المساعدة الديناميكية المعزولة لكل تاجر حياً
 # ----------------------------------------------------
 def save_to_chat_history_dynamic(merchant_id, sender: str, message_text: str):
     """ حفظ كل رسالة كسطر مستقل مربوط بالتاجر المكتشف تلقائياً """
@@ -66,7 +67,7 @@ def save_to_chat_history_dynamic(merchant_id, sender: str, message_text: str):
         print("خطأ في حفظ سجل المحادثة:", e)
 
 def get_chat_context(sender_id: str, merchant_id: str) -> list:
-    """ جلب الذاكرة وتصفيها برمجياً حسب معرف التاجر لـ Gemini """
+    """ جلب الذاكرة وتصفيها برمجياً حسب معرف التاجر لـ Gemini (آخر 6 رسائل سياق) """
     try:
         query = supabase.table("chat_history") \
             .select("sender, message_text") \
@@ -81,11 +82,10 @@ def get_chat_context(sender_id: str, merchant_id: str) -> list:
             contents.append(types.Content(role=role, parts=[types.Part.from_text(text=str(msg['message_text']))]))
         return contents
     except Exception as e: 
-        print("خطأ في سحب الذاكرة:", e)
+        print("خطأ في سحب الذاكرة السياقية:", e)
         return []
-
 def calculate_delivery_cost_dynamic(merchant_data, customer_lat: float, customer_lng: float) -> str:
-    """ حساب المسافة والتوصيل من إحداثيات محل التاجر المسترجع حياً """
+    """ حساب المسافة والتوصيل من إحداثيات محل التاجر المسترجع حياً بأمان تآملي """
     try:
         merchant_coords = (merchant_data['latitude'], merchant_data['longitude'])
         distance_km = geodesic(merchant_coords, (customer_lat, customer_lng)).kilometers
@@ -93,29 +93,44 @@ def calculate_delivery_cost_dynamic(merchant_data, customer_lat: float, customer
         return f"المسافة التقريبية للمحل هي {round(distance_km, 2)} كم، وتكلفة التوصيل الإجمالية لموقعك هي: {round(total_cost, 2)} دينار."
     except Exception as e: 
         return f"خطأ في حساب تكلفة التوصيل الجغرافي: {str(e)}"
+
 def check_and_book_appointment_dynamic(merchant_id, customer_name: str, customer_phone: str, requested_time_str: str) -> str:
-    """ حجز المواعيد في جدول التاجر الصحيح ومنع التضارب زمنياً """
+    """ حجز المواعيد مع تنظيف وتأمين صيغ الوقت نصياً لمنع التضارب وانهيار السيرفر """
     try:
-        requested_time = datetime.strptime(requested_time_str, '%Y-%m-%d %H:%M:%S')
+        clean_time_str = requested_time_str.strip()
+        
+        # تحليل مرن لأكثر من صيغة تاريخ قد يولدها الذكاء الاصطناعي
+        correct_datetime = None
+        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M'):
+            try:
+                correct_datetime = datetime.strptime(clean_time_str, fmt)
+                break
+            except ValueError:
+                continue
+                
+        if not correct_datetime:
+            return "عذراً، لم أستطع ضبط صيغة الوقت بشكل صحيح. يرجى كتابة التاريخ والوقت بوضوح مثل: 2026-08-05 14:00."
+
+        # التحقق الصارم من تضارب الموعد في جدول التاجر الحالي
         check_query = supabase.table("appointments") \
             .select("*") \
             .eq("merchant_id", merchant_id) \
-            .eq("appointment_time", requested_time.isoformat()) \
+            .eq("appointment_time", correct_datetime.isoformat()) \
             .eq("status", "confirmed") \
             .execute()
             
         if len(check_query.data) > 0: 
-            return "نعتذر منك، هذا الوقت محجوز مسبقاً من قبل زبون آخر. يرجى اختيار وقت وتاريخ آخر."
+            return "نعتذر منك بشدة، هذا الوقت محجوز مسبقاً. يرجى اختيار موعد آخر وسأقوم بتأكيده لك فوراً."
             
         booking_data = {
             "merchant_id": merchant_id, 
             "customer_phone": customer_phone, 
             "customer_name": customer_name, 
-            "appointment_time": requested_time.isoformat(), 
+            "appointment_time": correct_datetime.isoformat(), 
             "status": "confirmed"
         }
         supabase.table("appointments").insert(booking_data).execute()
-        return f"تم تأكيد حجزك بنجاح باسم {customer_name} في الوقت والتاريخ المحدد: {requested_time_str}."
+        return f"تم تأكيد حجزك بنجاح باسم {customer_name} في الوقت والتاريخ المحدد: {correct_datetime.strftime('%Y-%m-%d الساعة %H:%M')}."
     except Exception as e: 
         return f"خطأ أثناء معالجة حجز الموعد: {str(e)}"
 
@@ -123,25 +138,18 @@ def check_and_book_appointment_dynamic(merchant_id, customer_name: str, customer
 # عقل البوت والتكامل مع Gemini والوظائف الذكية
 # ----------------------------------------------------
 def process_message_with_gemini(sender_id, user_message, merchant_data):
-    """ إرسال سياق نظيف وإجبار الموديل على الالتزام الصارم ببيانات التاجر وحالة التوصيل """
+    """ إرسال سياق نظيف وإجبار الموديل على الالتزام الصارم ببيانات التاجر وحالة التوصيل حياً """
     try:
         merchant_id = merchant_data.get('id')
         merchant_name = merchant_data.get('business_name', 'المحل')
         merchant_phone = merchant_data.get('phone_number', 'غير مسجل')
         business_type = merchant_data.get('business_type', 'خدماتي')
         
-        # التحقق من حالة التوصيل للتاجر (True أو False من قاعدة البيانات)
         provides_delivery = merchant_data.get('provides_delivery', False)
 
-        # جلب الذاكرة الصافية للزبون مع هذا التاجر بالذات
         history_contents = get_chat_context(sender_id, merchant_id)
+        history_contents.append(types.Content(role="user", parts=[types.Part.from_text(text=str(user_message))]))
         
-        history_contents.append(types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=str(user_message))]
-        ))
-        
-        # تفعيل الأدوات والوظائف الذكية لـ Gemini
         tools = [
             types.Tool(
                 function_declarations=[
@@ -174,7 +182,6 @@ def process_message_with_gemini(sender_id, user_message, merchant_data):
             )
         ]
         
-        # صياغة التعليمات الصارمة وحقن حالة التوصيل حياً لكل تاجر مستقل
         if provides_delivery:
             delivery_instruction = (
                 "نحن نوفر خدمة التوصيل للموقع. إذا استفسر الزبون عن التوصيل أو سعره، "
@@ -184,7 +191,7 @@ def process_message_with_gemini(sender_id, user_message, merchant_data):
         else:
             delivery_instruction = (
                 "نحن لا نوفر خدمة التوصيل نهائياً في هذا المحل. إذا سألك الزبون عن التوصيل أو سعره، "
-                "اعتذر له بلطف وبوضوح تام وأخبره أن الخدمة غير متوفرة حالياً وعليها الاستلام من مقرنا فقط."
+                "اعتذر له بلطف وبوضوح تام وأخبره أن الخدمة غير متوفرة حالياً وعليه الاستلام من مقرنا فقط."
             )
         
         system_instruction = (
@@ -198,7 +205,7 @@ def process_message_with_gemini(sender_id, user_message, merchant_data):
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             tools=tools,
-            temperature=0.1,  # التزام صارم بالحقائق الممررة من قاعدة البيانات ومنع التخريف الرقمي
+            temperature=0.1,  # حماية صارمة لمنع التخريف الرقمي
             max_output_tokens=200
         )
         
@@ -208,7 +215,6 @@ def process_message_with_gemini(sender_id, user_message, merchant_data):
             config=config
         )
         
-        # معالجة استدعاء الدوال الذكية (Function Calling)
         if response.function_calls:
             for call in response.function_calls:
                 if call.name == "check_and_book_appointment_dynamic":
@@ -226,14 +232,12 @@ def process_message_with_gemini(sender_id, user_message, merchant_data):
         print("خطأ في المعالجة عبر Gemini:", e)
         return "معذرةً، حدث خطأ مؤقت في نظام المعالجة الذكي."
 # ----------------------------------------------------
-# ميزات الـ Sprint الجديد: مؤشر الكتابة وأزرار فيسبوك التفاعلية الديناميكية
+# ميزات الـ Sprint الجديد: مؤشر الكتابة وأزرار فيسبوك التفاعلية والسلع الرسومية
 # ----------------------------------------------------
 
 def send_facebook_action_dynamic(recipient_id, access_token, action_type="typing_on"):
-    """ تشغيل أو إيقاف مؤشر الكتابة بناءً على توكن التاجر برابط مفكك محمي من الفلاتر وقص الواجهة """
-    # تفكيك الرابط نصياً بعلامة الزائد لمنع واجهة الشات من قصه وتحويله لرابط نشط
+    """ تشغيل أو إيقاف مؤشر الكتابة (typing_on / typing_off) بناءً على توكن التاجر المستهدف """
     url = "https" + "://" + "graph" + "." + "facebook" + "." + "com" + "/v21.0" + "/me" + "/messages"
-    
     query_params = {"access_token": access_token}
     payload = {
         "recipient": {"id": recipient_id},
@@ -249,7 +253,6 @@ def send_facebook_action_dynamic(recipient_id, access_token, action_type="typing
 def send_location_button_dynamic(recipient_id, access_token, text_message):
     """ إرسال زر تفاعلي رسمي (Quick Reply) يطلب من الزبون إرسال موقعه الجغرافي بنقرة واحدة """
     url = "https" + "://" + "graph" + "." + "facebook" + "." + "com" + "/v21.0" + "/me" + "/messages"
-    
     query_params = {"access_token": access_token}
     payload = {
         "recipient": {"id": recipient_id},
@@ -269,31 +272,135 @@ def send_location_button_dynamic(recipient_id, access_token, text_message):
         print("خطأ في إرسال زر مشاركة الموقع التفاعلي:", e)
 
 
+def send_products_carousel_dynamic(recipient_id, access_token):
+    """ إرسال مصفوفة كروت المنتجات والصور للسلع بشكل جذاب وبأعلى حماية من الحجب وقص الروابط """
+    url = "https" + "://" + "graph" + "." + "facebook" + "." + "com" + "/v21.0" + "/me" + "/messages"
+    query_params = {"access_token": access_token}
+    
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "generic",
+                    "elements": [
+                        {
+                            "title": "وجبة البرجر العملاق 🍔",
+                            "image_url": "https" + "://" + "images" + "." + "unsplash" + "." + "com" + "/photo-1568901346375-23c9450c58cd?q=80&w=500",
+                            "subtitle": "السعر: 450 دينار - متوفرة للتوصيل الفوري",
+                            "buttons": [
+                                {
+                                    "type": "postback",
+                                    "title": "🛒 اطلب الآن",
+                                    "payload": "ORDER_BURGER"
+                                }
+                            ]
+                        },
+                        {
+                            "title": "وجبة البيتزا العائلية 🍕",
+                            "image_url": "https" + "://" + "images" + "." + "unsplash" + "." + "com" + "/photo-1513104890138-7c749659a591?q=80&w=500",
+                            "subtitle": "السعر: 800 دينار - بحجم عائلي كبير",
+                            "buttons": [
+                                {
+                                    "type": "postback",
+                                    "title": "🛒 اطلب الآن",
+                                    "payload": "ORDER_PIZZA"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    headers = {"Content-Type": "application/json"}
+    try:
+        response = requests.post(url, json=payload, headers=headers, params=query_params)
+        if response.status_code != 200:
+            print(f"رفض إرسال الكروت من ميتا: {response.text}")
+    except Exception as e:
+        print("حدث خطأ أثناء محاولة إرسال كروت المنتجات:", e)
+
+
 def send_messenger_reply_dynamic(recipient_id, text_reply, access_token):
     """ إرسال الرد النصي النهائي للزبون باستخدام توكن التاجر الصحيح ديناميكياً """
     url = "https" + "://" + "graph" + "." + "facebook" + "." + "com" + "/v21.0" + "/me" + "/messages"
-    
     query_params = {"access_token": access_token}
     payload = {
         "recipient": {"id": recipient_id},
         "message": {"text": text_reply}
     }
     headers = {"Content-Type": "application/json"}
-    
     try:
         response = requests.post(url, json=payload, headers=headers, params=query_params)
-        if response.status_code == 200:
-            print("==> تم إرسال الرد العكسي للزبون عبر فيسبوك بنجاح! 🎉")
-        else:
+        if response.status_code != 200:
             print(f"رفض الإرسال من طرف ميتا (كود {response.status_code}): {response.text}")
     except Exception as e:
         print("حدث خطأ أثناء محاولة الاتصال بخوادم ميتا الرسمية:", e)
+# ----------------------------------------------------
+# دالة معالجة الرسائل والذكاء الاصطناعي في الخلفية (Background Worker)
+# ----------------------------------------------------
+def background_message_processor(messaging, merchant_data):
+    """ معالجة الرسالة في الخلفية المستقلة مع تفعيل ذكاء إرسال السلع الرسومية والصور تلقائياً """
+    try:
+        sender_id = messaging['sender']['id']
+        merchant_id = merchant_data['id']
+        
+        # فك تشفير التوكن ديناميكياً لحماية الـ SaaS
+        encrypted_token = merchant_data.get('page_access_token')
+        merchant_token = decrypt_token(encrypted_token) if encrypted_token else PAGE_ACCESS_TOKEN
+
+        # تشغيل مؤشر الكتابة فوراً بمجرد بدء المعالجة
+        send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_on")
+
+        # 1. التقاط الموقع الجغرافي التلقائي وحساب التوصيل للتاجر الحالي
+        if 'message' in messaging and 'attachments' in messaging['message']:
+            for attachment in messaging['message']['attachments']:
+                if attachment.get('type') == 'location':
+                    coordinates = attachment['payload']['coordinates']
+                    lat = coordinates['lat']
+                    lng = coordinates['long']
+                    
+                    save_to_chat_history_dynamic(merchant_id, sender=sender_id, message_text="[أرسل موقعه الجغرافي]")
+                    reply_text = calculate_delivery_cost_dynamic(merchant_data, lat, lng)
+                    
+                    save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
+                    
+                    # إغلاق مؤشر الكتابة وإرسال الرد المالي النهائي
+                    send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_off")
+                    send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
+                    return
+
+        # 2. استقبال الرسائل النصية وتمريرها لعقل Gemini مع بيانات التاجر التلقائية
+        if 'message' in messaging and 'text' in messaging['message']:
+            message_text = messaging['message']['text']
+            
+            save_to_chat_history_dynamic(merchant_id, sender=sender_id, message_text=message_text)
+            reply_text = process_message_with_gemini(sender_id, message_text, merchant_data)
+            
+            save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
+            
+            # إغلاق مؤشر الكتابة قبل الإرسال العكسي للزبون
+            send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_off")
+            
+            # [التقاط ذكي للمنتجات]: إذا كان الرد يحتوي على منيو أو منتجات، نرسل الكروت الرسومية فوراً تحت النص
+            if "قائمة المنتجات" in reply_text or "المنيو" in reply_text or "قائمة السلع" in reply_text:
+                send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
+                send_products_carousel_dynamic(sender_id, merchant_token)
+            # ذكاء التوصيل الجغرافي
+            elif "زر مشاركة الموقع" in reply_text or "لتصلنا إحداثياتك تلقائياً" in reply_text:
+                send_location_button_dynamic(sender_id, merchant_token, reply_text)
+            else:
+                send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
+                
+    except Exception as e:
+        print("خطأ في معالجة الخلفية المستقلة:", e)
 
 
 # ----------------------------------------------------
 # مسارات استقبال وتحقق ويب هوك ميتا الموحد المحدثة الصارمة
 # ----------------------------------------------------
-
 @app.route('/', methods=['GET'])
 def home():
     return "مرحباً بك! سيرفر منصة SaaS يعمل بنجاح ومستيقظ الآن 🚀", 200
@@ -317,88 +424,42 @@ def verify_webhook():
 
 @app.route('/webhook', methods=['POST'])
 def handle_messages():
-    """ استقبال ومعالجة الرسائل والمواقع وحجز المواعيد بشكل ديناميكي معزول بالكامل لكل تاجر """
+    """ استقبال الرسالة وإعطاء فيسبوك رد فوري لمنع التكرار البنائي، ثم معالجة البيانات في الخلفية """
     data = request.get_json()
     if not data:
         return "بيانات فارغة", 400
         
     if data.get('object') in ['page', 'instagram']:
         try:
-            # معالجة استخراج المصفوفات بشكل صارم ومضمون وفقاً لهيكلة ميتا الحية لمنع الـ Crash
-            entry = data['entry'][0]
-            if 'messaging' in entry:
-                messaging = entry['messaging'][0]
-                sender_id = messaging['sender']['id'] 
-                facebook_page_id = messaging['recipient']['id']
-                
-                print(f"[نظام SaaS] تم التقاط معرف الصفحة المستقبلة حياً: {facebook_page_id}")
-                
-                # جلب بيانات التجار والمطابقة البرمجية في الذاكرة لتفادي انهيار السيرفر
-                merchant_query = supabase.table("merchants").select("*").execute()
-                merchant_data = None
-                
-                if merchant_query.data:
-                    for merchant in merchant_query.data:
-                        db_page_id = str(merchant.get('facebook_page_id', '')).strip()
-                        incoming_page_id = str(facebook_page_id).strip()
+            entry_list = data['entry']
+            for entry in entry_list:
+                if 'messaging' in entry:
+                    # سحب مصفوفة الرسائل بالكامل بشكل آمن وفقاً لبروتوكول ميتا لمنع الـ Crash
+                    for messaging_event in entry['messaging']:
+                        facebook_page_id = messaging_event['recipient']['id']
                         
-                        if db_page_id == incoming_page_id:
-                            merchant_data = merchant
-                            break
-                
-                if not merchant_data:
-                    print(f"تحذير: لم نجد تاجر مطابق في الذاكرة للرقم: {facebook_page_id}")
-                    return "صفحة غير مسجلة في النظام", 200
-                    
-                merchant_id = merchant_data['id']
-                
-                # سحب التوكن المشفر الخاص بالتاجر وفك تشفيره لحظياً في الذاكرة (حماية الـ SaaS)
-                encrypted_token = merchant_data.get('page_access_token')
-                merchant_token = decrypt_token(encrypted_token) if encrypted_token else PAGE_ACCESS_TOKEN
-
-                # تشغيل مؤشر الكتابة فوراً بمجرد استقبال الرسالة لمنح شعور طبيعي للبشر
-                send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_on")
-
-                # 1. التقاط الموقع الجغرافي التلقائي وحساب التوصيل للتاجر الحالي
-                if 'message' in messaging and 'attachments' in messaging['message']:
-                    for attachment in messaging['message']['attachments']:
-                        if attachment.get('type') == 'location':
-                            coordinates = attachment['payload']['coordinates']
-                            lat = coordinates['lat']
-                            lng = coordinates['long']
-                            
-                            save_to_chat_history_dynamic(merchant_id, sender=sender_id, message_text="[أرسل موقعه الجغرافي]")
-                            reply_text = calculate_delivery_cost_dynamic(merchant_data, lat, lng)
-                            
-                            save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
-                            
-                            # إغلاق مؤشر الكتابة وإرسال الرد المالي النهائي
-                            send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_off")
-                            send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
-                            return "تم المعالجة", 200
-
-                # 2. استقبال الرسائل النصية وتمريرها لعقل Gemini مع بيانات التاجر التلقائية
-                if 'message' in messaging and 'text' in messaging['message']:
-                    message_text = messaging['message']['text']
-                    
-                    save_to_chat_history_dynamic(merchant_id, sender=sender_id, message_text=message_text)
-                    reply_text = process_message_with_gemini(sender_id, message_text, merchant_data)
-                    
-                    save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
-                    
-                    # إغلاق مؤشر الكتابة قبل الإرسال العكسي
-                    send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_off")
-                    
-                    # ذكاء التوصيل: إذا كان الرد يوجه الزبون للموقع، نرسل له الزر التفاعلي فوراً
-                    if "زر مشاركة الموقع" in reply_text or "لتصلنا إحداثياتك تلقائياً" in reply_text:
-                        send_location_button_dynamic(sender_id, merchant_token, reply_text)
-                    else:
-                        send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
-                    
+                        # مطابقة التاجر في الذاكرة لتفادي انهيار السيرفر
+                        merchant_query = supabase.table("merchants").select("*").execute()
+                        merchant_data = None
+                        
+                        if merchant_query.data:
+                            for merchant in merchant_query.data:
+                                db_page_id = str(merchant.get('facebook_page_id', '')).strip()
+                                if db_page_id == str(facebook_page_id).strip():
+                                    merchant_data = merchant
+                                    break
+                                    
+                        if not merchant_data:
+                            continue
+                        
+                        # تشغيل دالة المعالجة في خيط مستقل (Thread) وإعادة رد 200 OK لفيسبوك فوراً لمنع التكرار
+                        threading.Thread(target=background_message_processor, args=(messaging_event, merchant_data)).start()
+                        
+            return "OK", 200  # إشعار نجاح فوري لفيسبوك يمنعه من إعادة المحاولة والتكرار
         except Exception as e:
-            print("خطأ في معالجة رسالة ماسنجر الواردة:", e)
-        
-    return "تم الاستلام والمعالجة بنجاح", 200
+            print("خطأ في استقبال الويب هوك الرئيسي:", e)
+            
+    return "تم الاستلام", 200
 
 
 if __name__ == '__main__':
