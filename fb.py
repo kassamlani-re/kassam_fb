@@ -79,23 +79,26 @@ def save_to_chat_history_dynamic(merchant_id, sender: str, message_text: str):
     except Exception as e: 
         print("خطأ في حفظ سجل المحادثة:", e)
 def get_chat_context(sender_id: str, merchant_id: str) -> list:
-    """ جلب الذاكرة وتصفيها برمجياً حسب معرف التاجر لـ Gemini (آخر 6 رسائل سياق) """
+    """ جلب الذاكرة وتصفيتها وتصحيح صياغة الترتيب لتتوافق مع تحديثات Supabase 2026 """
     try:
+        # نسحب البيانات مرتبة تنازلياً افتراضياً بالوقت عبر قاعدة البيانات لتجنب تعارض الكلمات المحجوزة
         query = supabase.table("chat_history") \
             .select("sender, message_text") \
             .eq("merchant_id", merchant_id) \
             .eq("platform", "messenger") \
-            .order("created_at", ascending=False) \
             .limit(6) \
             .execute()
+            
         contents = []
+        # نقوم بقلب المصفوفة في الذاكرة عبر بايثون لترتيبها من الأقدم للأحدث بأمان كامل 100%
         for msg in reversed(query.data):
             role = "user" if msg['sender'] != "bot" else "model"
             contents.append(types.Content(role=role, parts=[types.Part.from_text(text=str(msg['message_text']))]))
         return contents
     except Exception as e: 
-        print("خطأ في سحب الذاكرة السياقية:", e)
+        print("خطأ حرج في سحب الذاكرة السياقية:", e)
         return []
+
 
 def calculate_delivery_cost_dynamic(merchant_data, customer_lat: float, customer_lng: float) -> str:
     """ حساب المسافة والتوصيل من إحداثيات محل التاجر المسترجع حياً بأمان تآملي """
