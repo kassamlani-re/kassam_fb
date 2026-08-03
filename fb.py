@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import threading
 from datetime import datetime
 from dotenv import load_dotenv
@@ -33,6 +34,18 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = Flask(__name__)
 
+# مصفوفة مؤقتة في الذاكرة لحفظ معرفات الرسائل الأخيرة ومنع التكرار نهائياً
+PROCESSED_MESSAGE_IDS = set()
+
+def clear_old_message_ids():
+    """ دالة تنظيف تلقائية لمنع امتلاء الذاكرة بالمُعرفات القديمة """
+    while True:
+        time.sleep(60)  # تنظيف الذاكرة كل دقيقة
+        PROCESSED_MESSAGE_IDS.clear()
+
+# تشغيل خيط التنظيف التلقائي في الخلفية كمحرك صامت لطبقة الحماية
+threading.Thread(target=clear_old_message_ids, daemon=True).start()
+
 # ----------------------------------------------------
 # وظائف الأمان والتشفير البرمجي الموحد لبيئة الـ SaaS
 # ----------------------------------------------------
@@ -65,7 +78,6 @@ def save_to_chat_history_dynamic(merchant_id, sender: str, message_text: str):
         supabase.table("chat_history").insert(data).execute()
     except Exception as e: 
         print("خطأ في حفظ سجل المحادثة:", e)
-
 def get_chat_context(sender_id: str, merchant_id: str) -> list:
     """ جلب الذاكرة وتصفيها برمجياً حسب معرف التاجر لـ Gemini (آخر 6 رسائل سياق) """
     try:
@@ -84,6 +96,7 @@ def get_chat_context(sender_id: str, merchant_id: str) -> list:
     except Exception as e: 
         print("خطأ في سحب الذاكرة السياقية:", e)
         return []
+
 def calculate_delivery_cost_dynamic(merchant_data, customer_lat: float, customer_lng: float) -> str:
     """ حساب المسافة والتوصيل من إحداثيات محل التاجر المسترجع حياً بأمان تآملي """
     try:
@@ -98,6 +111,8 @@ def check_and_book_appointment_dynamic(merchant_id, customer_name: str, customer
     """ حجز المواعيد مع تنظيف وتأمين صيغ الوقت نصياً لمنع التضارب وانهيار السيرفر """
     try:
         clean_time_str = requested_time_str.strip()
+        
+        # تحليل مرن لأكثر من صيغة تاريخ قد يولدها الذكاء الاصطناعي
         correct_datetime = None
         for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M'):
             try:
@@ -109,6 +124,7 @@ def check_and_book_appointment_dynamic(merchant_id, customer_name: str, customer
         if not correct_datetime:
             return "عذراً، لم أستطع ضبط صيغة الوقت بشكل صحيح. يرجى كتابة التاريخ والوقت بوضوح مثل: 2026-08-05 14:00."
 
+        # التحقق الصارم من تضارب الموعد في جدول التاجر الحالي
         check_query = supabase.table("appointments") \
             .select("*") \
             .eq("merchant_id", merchant_id) \
@@ -130,10 +146,6 @@ def check_and_book_appointment_dynamic(merchant_id, customer_name: str, customer
         return f"تم تأكيد حجزك بنجاح باسم {customer_name} في الوقت والتاريخ المحدد: {correct_datetime.strftime('%Y-%m-%d الساعة %H:%M')}."
     except Exception as e: 
         return f"خطأ أثناء معالجة حجز الموعد: {str(e)}"
-
-# ----------------------------------------------------
-# عقل البوت والتكامل مع Gemini والوظائف الذكية المحدثة للسلع
-# ----------------------------------------------------
 def get_merchant_products_live(merchant_id) -> list:
     """ سحب قائمة السلع الحية الخاصة بهذا التاجر بالذات من جدول products المشترك """
     try:
@@ -143,13 +155,17 @@ def get_merchant_products_live(merchant_id) -> list:
         print("خطأ في سحب المنتجات من قاعدة البيانات:", e)
         return []
 
+# ----------------------------------------------------
+# عقل البوت والتكامل مع Gemini والوظائف الذكية
+# ----------------------------------------------------
 def process_message_with_gemini(sender_id, user_message, merchant_data, image_bytes_data=None):
-    """ إرسال سياق نظيف ودعم قراءة الصور (Vision) ومطابقتها بالسلع الحية للتاجر """
+    """ إرسال سياق مرن واحترافي يجمع بين الرد الاجتماعي اللبق والحقائق الصارمة لقاعدة البيانات """
     try:
         merchant_id = merchant_data.get('id')
         merchant_name = merchant_data.get('business_name', 'المحل')
         merchant_phone = merchant_data.get('phone_number', 'غير مسجل')
         business_type = merchant_data.get('business_type', 'خدماتي')
+        
         provides_delivery = merchant_data.get('provides_delivery', False)
 
         # 1. سحب السلع والأسعار الحية للتاجر الحالي من جدول products الجديد
@@ -159,12 +175,11 @@ def process_message_with_gemini(sender_id, user_message, merchant_data, image_by
         # 2. جلب الذاكرة السياقية للرسائل
         history_contents = get_chat_context(sender_id, merchant_id)
         
-        # 3. دعم معالجة الصور والنصوص معاً (Multimodal)
+        # 3. دعم معالجة الصور والنصوص معاً (Multimodal Vision)
         user_parts = []
         if image_bytes_data:
-            # إذا أرسل الزبون صورة إعلان، نمررها للبايتات الخاصة بـ Gemini ليفحصها حياً
             user_parts.append(types.Part.from_bytes(data=image_bytes_data, mime_type="image/jpeg"))
-            user_parts.append(types.Part.from_text(text="افحص هذه الصورة وتعرف على السلعة الموجودة فيها وأعط الزبون سعرها من سياق المنتجات."))
+            user_parts.append(types.Part.from_text(text="افحص هذه الصورة المطابقة لإعلان التاجر، وتعرف على السلعة واحسب سعرها."))
         
         if user_message:
             user_parts.append(types.Part.from_text(text=str(user_message)))
@@ -205,27 +220,28 @@ def process_message_with_gemini(sender_id, user_message, merchant_data, image_by
         
         if provides_delivery:
             delivery_instruction = (
-                "نحن نوفر خدمة التوصيل. إذا استفسر الزبون عن التوصيل، قل له: "
-                "'نعم، التوصيل متوفر. يمكنك إضافة موقعك الدقيق من خلال الضغط على زر مشاركة الموقع لتصلنا إحداثياتك تلقائياً.'"
+                "نحن نوفر خدمة التوصيل للموقع حالياً. إذا استفسر الزبون عن التوصيل أو سعره، "
+                "يجب أن تجيبه بلباقة وترحيب وتذكر النص التالي بدقة: (نعم، التوصيل متوفر لدينا. يمكنك مشاركة موقعك الدقيق من خلال الضغط على زر مشاركة الموقع لتصلنا إحداثياتك تلقائياً وحساب التكلفة بدقة.)"
             )
         else:
-            delivery_instruction = "نحن لا نوفر خدمة التوصيل نهائياً في هذا المحل، اعتذر للزبون بلطف إذا سألك عنها."
+            delivery_instruction = "نحن لا نوفر خدمة التوصيل نهائياً في هذا المحل حالياً. إذا سألك الزبون عن التوصيل، اعتذر له بلطف وأخبره أن الخدمة غير متوفرة وعليها الاستلام من المقر."
         
         system_instruction = (
-            f"أنت المساعد الافتراضي الآلي لصفحة ({merchant_name}) المتخصصة في ({business_type}). "
-            f"معلومات التواصل الحقيقية والوحيدة الخاصة بنا هي: رقم الهاتف الحركي هو ({merchant_phone}). "
-            f"إليك قائمة المنتجات والسلع الحقيقية والحية المتوفرة في محلنا الآن بالأسعار والصور: ({products_context_str}). "
-            "التزم بهذه القائمة حرفياً! إذا سألك الزبون عن سعر سلعة أو اسمها، أجب بناءً عليها فقط وممنوع اختراع أسعار. "
-            "إذا طلب الزبون قائمة السلع أو المنيو، يجب أن تذكر في ردك جملة (إليك قائمة المنتجات الخاصة بنا:) ليقوم النظام بعرضها تلقائياً. "
-            "إذا سأل الزبون عن منتج محدد نصاً أو عبر صورة أرسلها، أجب بالسعر من القائمة واكتب في نهاية رسالتك عبارة (إليك كارت السلعة المعنية:) ليقوم السيرفر بإرسال كارت السلعة المصور فوراً للزبون. "
+            f"أنت المساعد الافتراضي الآلي الذكي والمرحب لصفحة ({merchant_name}) المتخصصة في ({business_type}). "
+            "أنت تمثل خدمة عملاء محترفة وبشرية؛ إذا شكرك الزبون أو حياك، رد عليه بلباقة وترحيب حار (مثال: على الرحب والسعة، أهلاً بك في أي وقت!). "
+            f"معلومات التواصل الحقيقية والوحيدة الخاصة بنا هي: رقم الهاتف هو ({merchant_phone}). "
+            f"إليك قائمة المنتجات والسلع الحقيقية المتوفرة في قاعدة بيانات المحل حالياً بالأسعار والصور: ({products_context_str}). "
+            "التزم بهذه القائمة حرفياً لتقديم الأسعار والسلع الحية. إذا سأل الزبون عن منتج متوفر فيها (مثل البرغر أو غيره)، أجب بسعره وتفاصيله فوراً وبثقة. "
+            "إذا طلب الزبون قائمة السلع بالكامل أو المنيو، يجب أن تذكر في ردك جملة (إليك قائمة المنتجات الخاصة بنا:) ليقوم النظام بعرض الكروت تلقائياً. "
+            "إذا كان يستفسر عن منتج واحد محدد بالاسم أو عبر صورة أرسلها، أكتب في نهاية رسالتك عبارة (إليك كارت السلعة المعنية:) ليقوم النظام بعرض كارت السلعة المصور للزبون. "
             f"{delivery_instruction} "
-            "أجب باختصار شديد وبأسلوب محترف، ولا تذكر جوجل أو منصة SaaS."
+            "أجب باختصار ودون فلسفة زائدة، ولا تذكر جوجل أو منصة SaaS نهائياً في ردودك للعملاء."
         )
         
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             tools=tools,
-            temperature=0.1,
+            temperature=0.3, # تم الرفع لتسريع الاستجابة الاجتماعية اللبقة
             max_output_tokens=250
         )
         
@@ -248,11 +264,10 @@ def process_message_with_gemini(sender_id, user_message, merchant_data, image_by
         return response.text if response.text else "مرحباً بك، كيف يمكنني مساعدتك اليوم؟"
         
     except Exception as e:
-        print("خطأ في المعالجة عبر Gemini:", e)
+        print("خطأ في المعالجة عبر Gemini المطور:", e)
         return "معذرةً، حدث خطأ مؤقت في نظام المعالجة الذكي."
-
 # ----------------------------------------------------
-# ميزات الـ Sprint الجديد: مؤشرات الكتابة والقوالب الرسومية الديناميكية للسلع من قاعدة البيانات
+# ميزات الـ Sprint الجديد: مؤشرات الكتابة والقوالب الرسومية الديناميكية للسلع
 # ----------------------------------------------------
 
 def send_facebook_action_dynamic(recipient_id, access_token, action_type="typing_on"):
@@ -291,12 +306,11 @@ def send_location_button_dynamic(recipient_id, access_token, text_message):
 def send_dynamic_products_carousel(recipient_id, access_token, merchant_id):
     """ سحب السلع حياً من جدول products وعرضها كمنيو متحرك بالصور والأسعار لتاجر الـ SaaS الحالي """
     try:
-        # استعلام حي لجلب منتجات هذا التاجر بالتحديد من قاعدة البيانات
         query = supabase.table("products").select("*").eq("merchant_id", merchant_id).limit(10).execute()
         products_list = query.data if query.data else []
         
         if not products_list:
-            return  # إذا لم يضف التاجر منتجات بعد، لا نرسل قالباً فارغاً
+            return
             
         elements = []
         for prod in products_list:
@@ -382,20 +396,19 @@ def background_message_processor(messaging, merchant_data):
         sender_id = messaging['sender']['id']
         merchant_id = merchant_data['id']
         
-        # فك تشفير توكن التاجر حياً لحماية الـ SaaS
+        # fك تشفير توكن التاجر حياً لحماية الـ SaaS
         encrypted_token = merchant_data.get('page_access_token')
         merchant_token = decrypt_token(encrypted_token) if encrypted_token else PAGE_ACCESS_TOKEN
 
-        # تشغيل مؤشر الكتابة فوراً
+        # تشغيل مؤشر الكتابة فوراً بمجرد بدء المعالجة
         send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_on")
 
         image_bytes_data = None
         message_text = ""
 
-        # 1. التقاط الصور والمرفقات (مثل صورة إعلان السلعة)
+        # 1. التقاط الصور والمرفقات (مثل صورة إعلان السلعة أو الموقع الجغرافي)
         if 'message' in messaging and 'attachments' in messaging['message']:
             for attachment in messaging['message']['attachments']:
-                # أ) إذا كان المرفق موقع جغرافي تلقائي، نحسب التوصيل فوراً
                 if attachment.get('type') == 'location':
                     coordinates = attachment['payload']['coordinates']
                     lat = coordinates['lat']
@@ -409,7 +422,6 @@ def background_message_processor(messaging, merchant_data):
                     send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
                     return
                 
-                # ب) إذا كان المرفق صورة، نقوم بتحميلها كبايتات ليفحصها Gemini حياً
                 elif attachment.get('type') == 'image':
                     image_url = attachment['payload']['url']
                     try:
@@ -420,19 +432,17 @@ def background_message_processor(messaging, merchant_data):
                     except Exception as img_err:
                         print("خطأ أثناء تحميل بايتات الصورة من فيسبوك:", img_err)
 
-        # 2. التقاط النص العادي إذا وجد مصاحباً للصورة أو منفرداً
+        # 2. التقاط النص العادي
         if 'message' in messaging and 'text' in messaging['message']:
             message_text = messaging['message']['text']
             if not image_bytes_data:
                 save_to_chat_history_dynamic(merchant_id, sender=sender_id, message_text=message_text)
 
-        # 3. تمرير المعطيات (النص، وبايتات الصورة إن وجدت) إلى عقل Gemini متعدد الوسائط
+        # 3. تمرير المعطيات إلى عقل Gemini متعدد الوسائط
         if message_text or image_bytes_data:
             reply_text = process_message_with_gemini(sender_id, message_text, merchant_data, image_bytes_data)
             
             save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
-            
-            # إغلاق مؤشر الكتابة قبل الإرسال للزبون
             send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_off")
             
             # [السيناريو 1: طلب المنيو أو السلع بالكامل ديناميكياً]
@@ -443,13 +453,9 @@ def background_message_processor(messaging, merchant_data):
             # [السيناريو 2: استفسار عن سلعة محددة نصاً أو عبر صورة إعلان]
             elif "إليك كارت السلعة المعنية" in reply_text:
                 send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
-                
-                # استخراج السلعة الحية المطابقة من جدول المنتجات لإرسال كارتها المصور فوراً
-                # سنقوم بالبحث برمجياً في سلع التاجر الحالية لمطابقة ما وجده Gemini
                 live_prods = supabase.table("products").select("*").eq("merchant_id", merchant_id).execute().data
                 if live_prods:
                     for p in live_prods:
-                        # إذا ذكر الموديل اسم المنتج في الرد، نرسل كارت هذا المنتج بالتحديد
                         if str(p.get('title')) in reply_text or (message_text and str(p.get('title')) in message_text):
                             send_single_product_card(
                                 recipient_id=sender_id,
@@ -500,7 +506,7 @@ def verify_webhook():
 
 @app.route('/webhook', methods=['POST'])
 def handle_messages():
-    """ استقبال الرسالة وإعطاء فيسبوك رد فوري لمنع التكرار البنائي، ثم معالجة البيانات في الخلفية """
+    """ استقبال الرسائل وتدمير التكرار حياً عبر فحص الـ message_id الفريد ومطابقة التاجر بأمان """
     data = request.get_json()
     if not data:
         return "بيانات فارغة", 400
@@ -511,8 +517,18 @@ def handle_messages():
             for entry in entry_list:
                 if 'messaging' in entry:
                     for messaging_event in entry['messaging']:
+                        
+                        # التقاط المعرف الفريد للرسالة لمنع التكرار البنائي العكسي
+                        message_id = messaging_event.get('message', {}).get('mid')
+                        if message_id:
+                            if message_id in PROCESSED_MESSAGE_IDS:
+                                print(f"[حماية الـ SaaS] تم تدمير حزمة متكررة للرسالة: {message_id}")
+                                return "OK", 200
+                            PROCESSED_MESSAGE_IDS.add(message_id)
+
                         facebook_page_id = messaging_event['recipient']['id']
                         
+                        # مطابقة التاجر في الذاكرة
                         merchant_query = supabase.table("merchants").select("*").execute()
                         merchant_data = None
                         
@@ -526,10 +542,10 @@ def handle_messages():
                         if not merchant_data:
                             continue
                         
-                        # تشغيل دالة المعالجة في خيط مستقل (Thread) وإعادة رد 200 OK لفيسبوك فوراً لمنع التكرار
+                        # تشغيل المعالجة في خيط مستقل فوري وآمن
                         threading.Thread(target=background_message_processor, args=(messaging_event, merchant_data)).start()
                         
-            return "OK", 200  # إشعار نجاح فوري لفيسبوك يمنعه من إعادة المحاولة والتكرار
+            return "OK", 200
         except Exception as e:
             print("خطأ في استقبال الويب هوك الرئيسي:", e)
             
