@@ -184,13 +184,32 @@ def send_facebook_action_dynamic(recipient_id, access_token, action_type="typing
     except Exception as e: print("خطأ إشارة فيسبوك:", e)
 
 def send_location_button_dynamic(recipient_id, access_token, text_message):
+    """ إرسال الرد النصي مع توجيه بشرى ذكي لكيفية إرسال الموقع من ماسنجر لمنع الحجب الجداري """
+    # نعدل النص التمهيدي ليحتوي على دليل إرشادي واضح للزبون
+    updated_text = (
+        f"{text_message}\n\n"
+        "📌 لكيفية إرسال موقعك الآن:\n"
+        "1. اضغط على علامة المرفقات أو النقاط الأربعة (+) أسفل الشاشة.\n"
+        "2. اختر أيقونة 'الموقع الجغرافي' (Location) وأرسله حياً."
+    )
+    
     url = "https" + "://" + "graph" + "." + "facebook" + "." + "com" + "/v21.0" + "/me" + "/messages"
+    
+    # نرسل الصيغة الرسمية لـ Quick Reply كخطة أساسية
     payload = {
         "recipient": {"id": recipient_id},
-        "message": {"text": text_message, "quick_replies": [{"content_type": "location"}]}
+        "message": {
+            "text": updated_text,
+            "quick_replies": [{"content_type": "location"}]
+        }
     }
-    try: requests.post(url, json=payload, params={"access_token": access_token})
-    except Exception as e: print("خطأ زر الموقع:", e)
+    headers = {"Content-Type": "application/json"}
+    try:
+        # نرسل الطلب لفيسبوك
+        requests.post(url, json=payload, headers=headers, params={"access_token": access_token})
+    except Exception as e:
+        print("خطأ أثناء محاولة إرسال زر وتوجيه الموقع الجغرافي:", e)
+
 
 def send_dynamic_products_carousel(recipient_id, access_token, merchant_id):
     try:
