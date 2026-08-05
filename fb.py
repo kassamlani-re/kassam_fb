@@ -303,25 +303,33 @@ def verify_webhook():
 
 @app.route('/webhook', methods=['POST'])
 def handle_messages():
+    """ استقبال الرسائل وتدمير التكرار حياً عبر فحص الـ message_id الفريد ومطابقة التاجر بأمان """
     data = request.get_json()
     if data and data.get('object') in ['page', 'instagram']:
         for entry in data.get('entry', []):
             for messaging_event in entry.get('messaging', []):
                 m_id = messaging_event.get('message', {}).get('mid')
                 if m_id:
-                    if m_id in PROCESSED_MESSAGE_IDS: return "OK", 200
+                    if m_id in PROCESSED_MESSAGE_IDS: 
+                        return "OK", 200
                     PROCESSED_MESSAGE_IDS.add(m_id)
 
                 f_page_id = messaging_event['recipient']['id']
+                
+                # جلب وتصفية بيانات التجار من قاعدة البيانات
                 m_query = supabase.table("merchants").select("*").execute()
                 merchant_data = None
+                
+                # التصحيح الصارم والنهائي لاسم المتغير لتفادي خطأ NameError
                 if m_query.data:
-                    for merchant in merchant_query.data:
+                    for merchant in m_query.data:
                         if str(merchant.get('facebook_page_id', '')).strip() == str(f_page_id).strip():
                             merchant_data = merchant
                             break
+                            
                 if merchant_data:
                     threading.Thread(target=background_message_processor, args=(messaging_event, merchant_data)).start()
+                    
         return "OK", 200
     return "طلب غير صالح", 400
 
