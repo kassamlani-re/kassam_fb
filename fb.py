@@ -272,13 +272,17 @@ def background_message_processor(messaging, merchant_data):
             save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
             send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_off")
             
-            # [الالتقاط الذكي والمضمون للسيناريوهات دون تكرار]
-            if "نعم، التوصيل متوفر لدينا" in reply_text or "مشاركة موقعك الدقيق" in reply_text:
-                send_location_button_dynamic(sender_id, merchant_token, reply_text)
-            elif "إليك قائمة المنتجات الخاصة بنا" in reply_text or "المنيو" in reply_text:
+                       # [الالتقاط الذكي والمطوّر المرن لمنع صمت البوت نهائياً]
+            if "توصيل" in reply_text or "موقع" in reply_text or "إحداثيات" in reply_text:
+                # نرسل النص التمهيدي للزبون أولاً ثم نلحقه بزر مشاركة الموقع التفاعلي
+                send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
+                send_location_button_dynamic(sender_id, merchant_token, "اضغط هنا لمشاركة موقعك تلقائياً 📍")
+                
+            elif "إليك قائمة المنتجات الخاصة بنا" in reply_text or "المنيو" in reply_text or "تبيع" in reply_text:
                 send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
                 send_dynamic_products_carousel(sender_id, merchant_token, merchant_id)
-            elif "إليك كارت السلعة المعنية" in reply_text:
+                
+            elif "كارت السلعة" in reply_text or "كارت" in reply_text:
                 send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
                 live_prods = supabase.table("products").select("*").eq("merchant_id", merchant_id).execute().data
                 if live_prods:
@@ -287,8 +291,9 @@ def background_message_processor(messaging, merchant_data):
                             send_single_product_card(sender_id, merchant_token, p.get('title'), p.get('image_url'), p.get('price'), p.get('subtitle'), p.get('id'))
                             break
             else:
+                # الخطة الاحتياطية الذهبية: إذا لم يطابق أي سيناريو رسومي، أرسل نص الرد العادي ولا تصمت أبداً!
                 send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
-                
+
     except Exception as e:
         print("خطأ حرج في الخلفية:", e)
 
