@@ -210,7 +210,6 @@ def send_location_button_dynamic(recipient_id, access_token, text_message):
     except Exception as e:
         print("خطأ أثناء محاولة إرسال زر وتوجيه الموقع الجغرافي:", e)
 
-
 def send_dynamic_products_carousel(recipient_id, access_token, merchant_id):
     try:
         products_list = supabase.table("products").select("*").eq("merchant_id", merchant_id).limit(10).execute().data
@@ -291,26 +290,36 @@ def background_message_processor(messaging, merchant_data):
             save_to_chat_history_dynamic(merchant_id, sender="bot", message_text=reply_text)
             send_facebook_action_dynamic(sender_id, merchant_token, action_type="typing_off")
             
-                       # [الالتقاط الذكي والمطوّر المرن لمنع صمت البوت نهائياً]
-            if "توصيل" in reply_text or "موقع" in reply_text or "إحداثيات" in reply_text:
-                # نرسل النص التمهيدي للزبون أولاً ثم نلحقه بزر مشاركة الموقع التفاعلي
+                        # [الالتقاط الذكي والمطوّر المرن لمنع صمت البوت نهائياً]
+                        # [الالتقاط الذكي والمضمون للسلع والتوصيل دون تعارض نصي]
+            if "نعم، التوصيل متوفر لدينا" in reply_text or "مشاركة موقعك الدقيق" in reply_text or "توصيل" in reply_text:
                 send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
                 send_location_button_dynamic(sender_id, merchant_token, "اضغط هنا لمشاركة موقعك تلقائياً 📍")
                 
-            elif "إليك قائمة المنتجات الخاصة بنا" in reply_text or "المنيو" in reply_text or "تبيع" in reply_text:
+            elif "إليك قائمة المنتجات الخاصة بنا" in reply_text or "المنيو" in reply_text:
                 send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
                 send_dynamic_products_carousel(sender_id, merchant_token, merchant_id)
                 
-            elif "كارت السلعة" in reply_text or "كارت" in reply_text:
+            elif "كارت السلعة المعنية" in reply_text or "كارت" in reply_text:
                 send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
+                
+                # نسحب المنتجات حياً من قاعدة البيانات للتاجر الحالي
                 live_prods = supabase.table("products").select("*").eq("merchant_id", merchant_id).execute().data
                 if live_prods:
+                    # [تحديث ذكي]: إذا فشل في مطابقة الاسم حرفياً، يرسل المنتج الأول في القائمة تلقائياً كخطة احتياطية ذهبية
+                    product_sent = False
                     for p in live_prods:
-                        if str(p.get('title')) in reply_text or (message_text and str(p.get('title')) in message_text):
+                        p_title = str(p.get('title', ''))
+                        if p_title in reply_text or (message_text and p_title in message_text):
                             send_single_product_card(sender_id, merchant_token, p.get('title'), p.get('image_url'), p.get('price'), p.get('subtitle'), p.get('id'))
+                            product_sent = True
                             break
+                    
+                    # إذا لم يجد تطابقاً حرفياً، يرسل أول منتج مستهدف حياً لضمان عدم صمت السيرفر
+                    if not product_sent and len(live_prods) > 0:
+                        first_p = live_prods[0]
+                        send_single_product_card(sender_id, merchant_token, first_p.get('title'), first_p.get('image_url'), first_p.get('price'), first_p.get('subtitle'), first_p.get('id'))
             else:
-                # الخطة الاحتياطية الذهبية: إذا لم يطابق أي سيناريو رسومي، أرسل نص الرد العادي ولا تصمت أبداً!
                 send_messenger_reply_dynamic(sender_id, reply_text, merchant_token)
 
     except Exception as e:
