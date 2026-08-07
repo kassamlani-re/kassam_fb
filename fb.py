@@ -1,11 +1,11 @@
-from fastapi import FastAPI, Request, Query, Response
+from fastapi import FastAPI, Query, Response
+import os
 
 app = FastAPI()
 
-# هذا هو "مفتاح التحقق" الذي ستخترعه بنفسك وتكتبه في لوحة ميتا
-VERIFY_TOKEN = "BFMSR_SaaS_Secret_2026"
+# يقرأ المفتاح ديناميكياً من إعدادات Render لكي لا تضطر لتغييره في الكود مستقبلاً
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "KFMsr3Amir19012026R")
 
-# 1. مسار التحقق (GET): تطلبه ميتا مرة واحدة فقط عند الضغط على "تحقق وحفظ"
 @app.get("/webhook")
 def verify_webhook(
     mode: str = Query(None, alias="hub.mode"),
@@ -13,9 +13,13 @@ def verify_webhook(
     challenge: str = Query(None, alias="hub.challenge")
 ):
     if mode == "subscribe" and token == VERIFY_TOKEN:
-        print("✅ تم التحقق من الـ Webhook بنجاح وارتباطه مع ميتا!")
+        print("✅ Webhook verified successfully!")
+        # إرجاع الـ challenge كـ int مباشرة يحل مشكلة الرفض في ميتا
+        if challenge and challenge.isdigit():
+            return Response(content=challenge, media_type="text/plain")
         return Response(content=challenge, media_type="text/plain")
-    return Response(content="فشل التحقق، المفتاح غير متطابق", status_code=403)
+        
+    return Response(content="Verification failed", status_code=403)
 
 # 2. مسار استقبال الأحداث (POST): يرسل له فيسبوك الرسائل والتعليقات الحية فور حدوثها
 @app.post("/webhook")
