@@ -123,35 +123,31 @@ def get_business_profile(user_id: str) -> dict:
 # ------------------------------------------------------------------
 
 def send_typing_indicator(fb_user_id: str, page_access_token: str, action: str = "typing_on") -> bool:
-    """
-    التسلسل الوظيفي 4:
-    تأخذ معرف الزبون على فيسبوك وتوكن الصفحة المفكوك، وترسل طلب HTTP POST 
-    إلى Meta Graph API لإظهار مؤشر الكتابة (typing_on) أو إطفائه (typing_off).
-    تُرجع True إذا تم قبول الطلب من فيسبوك بنجاح.
-    """
-    # رابط فيسبوك الموحد لإرسال الأحداث والمراسلات للنسخة v19.0
-    fb_url = f"https://facebook.com{page_access_token}"
+    # الرابط في سطر واحد مفصول بعلامة الزائد لمنع الاختصار التلقائي
+    fb_url = "https://" + "graph." + "://facebook.com" + "v19.0/me/messages"
     
-    # تفاصيل الطلب (Payload) المطلوبة من مطوري ميتا لتفعيل المؤشر
+    # تمرير توكن الوصول كمعامل استعلام آمن ومستقل
+    params = {"access_token": page_access_token}
+    
     payload = {
         "recipient": {"id": str(fb_user_id)},
-        "sender_action": action  # يمكن أن تكون 'typing_on' أو 'typing_off' أو 'mark_seen'
+        "sender_action": action
     }
     
     try:
-        # إرسال النبضة إلى سيرفرات فيسبوك مباشرة
-        response = requests.post(fb_url, json=payload, timeout=5)
+        # إرسال الطلب لفيسبوك
+        response = requests.post(fb_url, params=params, json=payload, timeout=5)
         
-        # إذا كان كود الاستجابة 200، فهذا يعني أن المؤشر ظهر بنجاح عند الزبون
         if response.status_code == 200:
             return True
             
-        print(f"⚠️ تنبيه فيسبوك: لم يتم تفعيل مؤشر الكتابة. كود الخطأ: {response.status_code}, التفاصيل: {response.text}")
+        print(f"⚠️ تنبيه فيسبوك: كود الخطأ {response.status_code}, التفاصيل: {response.text}")
         return False
         
     except Exception as e:
-        print(f"🚨 خطأ هندسي أثناء إرسال مؤشر الكتابة لفيسبوك: {e}")
+        print(f"🚨 خطأ هندسي أثناء إرسال مؤشر الكتابة: {e}")
         return False
+
 # ------------------------------------------------------------------
 # القسم (ج): دالة جلب آخر الرسائل المتبادلة (الذاكرة والسياق) لـ Gemini
 # ------------------------------------------------------------------
