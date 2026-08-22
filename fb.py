@@ -425,36 +425,39 @@ async def handle_facebook_events(request: Request):
         return {"status": "NOT_A_PAGE_EVENT"}
         
     # 3. الدخول في مصفوفة الأحداث (فيسبوك قد يرسل أكثر من حدث في نفس الجزء ث ثواني)
+        # 3. الدخول في مصفوفة الأحداث
     for entry in body.get("entry", []):
         page_id = entry.get("id") # معرف صفحة الفيسبوك المستهدفة
         
-        # 4. الاستدعاء الوظيفي (القسم أ): التحقق من اشتراك التاجر وصفحته في قاعدة البيانات
-        page_data_list = check_page_subscription(page_id)
+        # 4. الاستدعاء الوظيفي: التحقق من اشتراك التاجر (يُرجع قاموساً أو None)
+        merchant_page = check_page_subscription(page_id)
         
-        if not page_data_list:
-            # إذا كانت الصفحة غير مسجلة في الساس الخاص بنا، نتخطاها فوراً لحماية موارد المعالج
+        if not merchant_page:
+            # إذا كانت الصفحة غير مسجلة، نتخطاها فوراً لحماية موارد المعالج
             continue
             
-        # استخراج بيانات السطر الأول للتاجر المشترك
-        merchant_page = page_data_list[0]
-        user_id = merchant_page["user_id"] # معرف التاجر الفريد (UUID)
+        # التصحيح: القراءة مباشرة من القاموس دون استخدام [0]
+        user_id = merchant_page.get("user_id") 
         
-        # 5. الاستدعاء الوظيفي (القسم ب): فك تشفير التوكن الخاص بالصفحة لاستخدامه في الردود
+        # 5. الاستدعاء الوظيفي: فك تشفير التوكن الخاص بالصفحة
         try:
-            page_access_token = get_decrypted_token(merchant_page["page_access_token"])
+            page_access_token = get_decrypted_token(merchant_page.get("page_access_token"))
         except Exception:
-            # إذا فشل التشفير بسبب مفتاح خاطئ، نتخطى الحدث لكي لا ينهار السيرفر
             continue
 
-        # 6. الاستدعاء الوظيفي (القسم ت): جلب معلومات العمل والاتصال لتغذية البوت بالحقائق
+        # 6. الاستدعاء الوظيفي: جلب معلومات العمل والاتصال
         business_info = get_business_profile(user_id)
         
-        # 7. جلب إعدادات البوت الشخصية (مثل الـ system_instruction والـ temperature)
+        # 7. جلب إعدادات البوت الشخصية
         bot_query = supabase.table("bot_settings").select("system_instruction, temperature").eq("page_id", str(page_id)).execute()
         
-        # وضع إعدادات افتراضية دافئة بالفصحى في حال حدوث مشكلة طارئة في القراءة
-        system_instruction = bot_query.data[0]["system_instruction"] if bot_query.data else "أنت مساعد ذكي لخدمة العملاء."
-        temperature = bot_query.data[0]["temperature"] if bot_query.data else 0.3
+        # فحص أمان مضاف: للتأكد من أن مصفوفة bot_query.data ليست فارغة قبل القراءة منها لمنع KeyError آخر
+        if bot_query.data and len(bot_query.data) > 0:
+            system_instruction = bot_query.data[0].get("system_instruction", "أنت مساعد ذكي لخدمة العملاء.")
+            temperature = bot_query.data[0].get("temperature", 0.3)
+        else:
+            system_instruction = "أنت مساعد ذكي لخدمة العملاء."
+            temperature = 0.3
 
         # ------------------------------------------------------------------
         # المحطة القادمة [الجزء الثاني]: فرز ومعالجة رسائل المسنجر (Messaging)
