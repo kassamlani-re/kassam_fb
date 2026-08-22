@@ -464,49 +464,7 @@ async def handle_facebook_events(request: Request):
         # ------------------------------------------------------------------
         
     return {"status": "EVENT_PROCESSED"}
-        # ------------------------------------------------------------------
-        # القسم (ب) [الجزء الثاني]: فرز ومعالجة رسائل المسنجر والأزرار التفاعلية
-        # ------------------------------------------------------------------
-        
-        # الفحص المعماري: هل يحتوي الحدث القادم على مصفوفة مراسلات (messaging)؟
-    if "messaging" in entry:
-            for message_event in entry["messaging"]:
-                sender_id = str(message_event["sender"]["id"]) # معرف الزبون الفريد على فيسبوك
-                
-                # الفحص الأمني الحاسم: تجنب الرد على الرسائل الصادرة من البوت نفسه لمنع الحلقة اللانهائية (Loop)
-                if sender_id == str(page_id):
-                    continue
-
-                # --- [1] معالجة الرسائل النصية العادية القادمة من الزبائن ---
-                if "message" in message_event and "text" in message_event["message"]:
-                    user_message = message_event["message"]["text"]
-                    
-                    # خطوة 1 (التسلسل الوظيفي 4): تشغيل مؤشر الكتابة فوراً لتهدئة وشراء وقت للزبون
-                    send_typing_indicator(sender_id, page_access_token, "typing_on")
-                    
-                    # خطوة 2 (التسلسل الوظيفي 7): تدوين وحفظ رسالة الزبون الجديدة حياً في قاعدة البيانات
-                    save_chat_to_history(page_id, sender_id, "user", user_message)
-                    
-                    # خطوة 3 (التسلسل الوظيفي 5): استرجاع سياق آخر 10 رسائل لإنعاش الذاكرة
-                    chat_history = get_chat_context(page_id, sender_id, limit=10)
-                    
-                    # خطوة 4 (التسلسل الوظيفي 6): تمرير المعطيات كلها لـ Gemini 2.5 Flash للرد بفصحى ذكية ومؤمنة من الهلوسة
-                    ai_response = ask_gemini_bot(
-                        system_instruction=system_instruction,
-                        business_info=business_info,
-                        chat_history=chat_history,
-                        new_message=user_message,
-                        temperature=temperature
-                    )
-                    
-                    # خطوة 5 (التسلسل الوظيفي 7): تدوين رد البوت الذكي في السجل قبل إرساله لضمان التزامن
-                    save_chat_to_history(page_id, sender_id, "bot", ai_response)
-                    
-                    # خطوة 6 (التسلسل الوظيفي 8): قذف الإجابة النهائية المكتوبة بذكاء إلى هاتف الزبون
-                    send_messenger_message(sender_id, page_access_token, ai_response)
-                    
-                    # خطوة 7 والأخيرة: إطفاء مؤشر الكتابة بعد إتمام المهمة بنجاح
-
+       
         # ------------------------------------------------------------------
         # القسم (ب) [الجزء الثاني]: فرز ومعالجة رسائل المسنجر والأزرار التفاعلية
         # ------------------------------------------------------------------
