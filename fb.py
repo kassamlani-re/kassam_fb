@@ -124,7 +124,7 @@ def get_business_profile(user_id: str) -> dict:
 
 def send_typing_indicator(fb_user_id: str, page_access_token: str, action: str = "typing_on") -> bool:
     # الرابط في سطر واحد مفصول بعلامة الزائد لمنع الاختصار التلقائي
-    fb_url = "https://" + "graph." + "://facebook.com" + "v19.0/me/messages"
+    fb_url = "https://" + "graph." + ":/facebook.com" + "/v19.0/me/messages"
     
     # تمرير توكن الوصول كمعامل استعلام آمن ومستقل
     params = {"access_token": page_access_token}
