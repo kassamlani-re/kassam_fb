@@ -407,51 +407,64 @@ async def verify_facebook_webhook(request: Request):
 # القسم (ب) [الجزء الأول]: بوابة استقبال البيانات وتفحص هوية الصفحة المشتركة
 # ------------------------------------------------------------------
 
+# ==================================================================
+# SECTION 3: WEBHOOK ENDPOINTS (بوابات استقبال وتحليل الأحداث)
+# ==================================================================
+
+@app.get("/webhook")
+async def verify_webhook(request: Request):
+    """
+    بوابة التحقق الرسمية لفيسبوك (تُستدعى مرة واحدة عند ربط الـ Webhook أول مرة).
+    """
+    params = request.query_params
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+    
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        print("✅ تم التحقق من الـ Webhook بنجاح من سيرفرات فيسبوك!")
+        return Response(content=challenge, media_type="text/plain")
+    
+    raise HTTPException(status_code=403, detail="Verification token mismatch")
+
+
 @app.post("/webhook")
 async def handle_facebook_events(request: Request):
     """
-    الوظيفة المعمارية 2 في القسم 3:
-    تستقبل البيانات الخام (JSON) القادمة من فيسبوك عند حدوث أي تفاعل حقيقي،
-    وتقوم بفرز الحدث والتأكد من أن الصفحة تابعة لتاجر مسجل لدينا في الساس.
+    البوابة المعمارية الموحدة لاستقبال وتصنيف كافة أحداث فيسبوك (رسائل، أزرار، وتعليقات).
     """
     # 1. قراءة واستخراج ملف الـ JSON الخام القادم من شبكة الإنترنت
     body = await request.json()
-    
-    # طباعة الحدث في الـ Terminal الخاص بـ Render لمراقبة البيانات الحية (Logs)
     print("📥 حدث جديد قادم من سيرفرات فيسبوك:", body)
     
-    # 2. الفحص الأمني الأول: التأكد من أن الحدث قادم من صفحة (Page Object) وليس حساب شخصي
+    # 2. الفحص الأمني الأول: التأكد من أن الحدث قادم من صفحة (Page Object)
     if body.get("object") != "page":
         return {"status": "NOT_A_PAGE_EVENT"}
         
-    # 3. الدخول في مصفوفة الأحداث (فيسبوك قد يرسل أكثر من حدث في نفس الجزء ث ثواني)
-        # 3. الدخول في مصفوفة الأحداث
+    # 3. الدخول في مصفوفة الأحداث المعالجة
     for entry in body.get("entry", []):
         page_id = entry.get("id") # معرف صفحة الفيسبوك المستهدفة
         
-        # 4. الاستدعاء الوظيفي: التحقق من اشتراك التاجر (يُرجع قاموساً أو None)
+        # 4. الاستدعاء الوظيفي: التحقق من اشتراك التاجر في قاعدة البيانات
         merchant_page = check_page_subscription(page_id)
-        
         if not merchant_page:
-            # إذا كانت الصفحة غير مسجلة، نتخطاها فوراً لحماية موارد المعالج
             continue
             
-        # التصحيح: القراءة مباشرة من القاموس دون استخدام [0]
+        # القراءة الآمنة والمباشرة من القاموس دون استخدام مفاتيح مصفوفات خاطئة
         user_id = merchant_page.get("user_id") 
         
-        # 5. الاستدعاء الوظيفي: فك تشفير التوكن الخاص بالصفحة
+        # 5. فك تشفير التوكن الخاص بالصفحة لاستخدامه في الردود
         try:
             page_access_token = get_decrypted_token(merchant_page.get("page_access_token"))
         except Exception:
             continue
 
-        # 6. الاستدعاء الوظيفي: جلب معلومات العمل والاتصال
+        # 6. جلب معلومات العمل والاتصال لتغذية البوت بالحقائق
         business_info = get_business_profile(user_id)
         
-        # 7. جلب إعدادات البوت الشخصية
+        # 7. جلب إعدادات البوت الشخصية من جدول الإعدادات
         bot_query = supabase.table("bot_settings").select("system_instruction, temperature").eq("page_id", str(page_id)).execute()
         
-        # فحص أمان مضاف: للتأكد من أن مصفوفة bot_query.data ليست فارغة قبل القراءة منها لمنع KeyError آخر
         if bot_query.data and len(bot_query.data) > 0:
             system_instruction = bot_query.data[0].get("system_instruction", "أنت مساعد ذكي لخدمة العملاء.")
             temperature = bot_query.data[0].get("temperature", 0.3)
@@ -459,39 +472,30 @@ async def handle_facebook_events(request: Request):
             system_instruction = "أنت مساعد ذكي لخدمة العملاء."
             temperature = 0.3
 
-        # ------------------------------------------------------------------
-        # المحطة القادمة [الجزء الثاني]: فرز ومعالجة رسائل المسنجر (Messaging)
-        # ------------------------------------------------------------------
-        
-    return {"status": "EVENT_PROCESSED"}
-       
-        # ------------------------------------------------------------------
-        # القسم (ب) [الجزء الثاني]: فرز ومعالجة رسائل المسنجر والأزرار التفاعلية
-        # ------------------------------------------------------------------
-        
-        # الفحص المعماري: هل يحتوي الحدث القادم على مصفوفة مراسلات (messaging)؟
-    if "messaging" in entry:
+        # ==================================================================
+        # [المسار الأول]: فرز ومعالجة رسائل المسنجر والأزرار التفاعلية (Messaging)
+        # ==================================================================
+        if "messaging" in entry:
             for message_event in entry["messaging"]:
-                sender_id = str(message_event["sender"]["id"]) # معرف الزبون الفريد على فيسبوك
+                sender_id = str(message_event.get("sender", {}).get("id", ""))
                 
-                # الفحص الأمني الحاسم: تجنب الرد على الرسائل الصادرة من البوت نفسه لمنع الحلقة اللانهائية (Loop)
-                if sender_id == str(page_id):
+                # الفحص الأمني: تجنب الرد على الرسائل الصادرة من البوت نفسه
+                if sender_id == str(page_id) or not sender_id:
                     continue
 
-                # --- [1] معالجة الرسائل النصية العادية القادمة من الزبائن ---
+                # --- 1. معالجة الرسائل النصية العادية القادمة من الزبائن ---
                 if "message" in message_event and "text" in message_event["message"]:
-                    user_message = message_event["message"]["text"]
+                    user_message = message_event["message"]["text"].strip()
                     
-                    # خطوة 1 (التسلسل الوظيفي 4): تشغيل مؤشر الكتابة فوراً لتهدئة وشراء وقت للزبون
+                    # تصفية النصوص الفارغة وعلامات اتجاه الكتابة الصامتة لمنع الـ Null Errors
+                    if not user_message or user_message in ["\u200f", "\u200e"]:
+                        continue
+                    
                     send_typing_indicator(sender_id, page_access_token, "typing_on")
-                    
-                    # خطوة 2 (التسلسل الوظيفي 7): تدوين وحفظ رسالة الزبون الجديدة حياً في قاعدة البيانات
                     save_chat_to_history(page_id, sender_id, "user", user_message)
                     
-                    # خطوة 3 (التسلسل الوظيفي 5): استرجاع سياق آخر 10 رسائل لإنعاش الذاكرة
                     chat_history = get_chat_context(page_id, sender_id, limit=10)
                     
-                    # خطوة 4 (التسلسل الوظيفي 6): تمرير المعطيات كلها لـ Gemini 2.5 Flash للرد بفصحى ذكية ومؤمنة من الهلوسة
                     ai_response = ask_gemini_bot(
                         system_instruction=system_instruction,
                         business_info=business_info,
@@ -500,60 +504,46 @@ async def handle_facebook_events(request: Request):
                         temperature=temperature
                     )
                     
-                    # خطوة 5 (التسلسل الوظيفي 7): تدوين رد البوت الذكي في السجل قبل إرساله لضمان التزامن
                     save_chat_to_history(page_id, sender_id, "bot", ai_response)
-                    
-                    # خطوة 6 (التسلسل الوظيفي 8): قذف الإجابة النهائية المكتوبة بذكاء إلى هاتف الزبون
                     send_messenger_message(sender_id, page_access_token, ai_response)
-                    
-                    # خطوة 7 والأخيرة: إطفاء مؤشر الكتابة بعد إتمام المهمة بنجاح
                     send_typing_indicator(sender_id, page_access_token, "typing_off")
 
-                # --- [2] معالجة نبضات الأزرار التفاعلية (Postbacks) عند ضغط العميل ---
+                # --- 2. معالجة نبضات الأزرار التفاعلية (Postbacks) ---
                 elif "postback" in message_event:
-                    postback_payload = message_event["postback"]["payload"]
+                    postback_payload = message_event["postback"].get("payload")
                     
-                    # إذا كانت الشفرة السرية للزر المضغوط هي تأكيد الشراء
                     if postback_payload == "CONFIRM_ORDER":
-                        # خطوة 1: تشغيل مؤشر الكتابة فوراً
                         send_typing_indicator(sender_id, page_access_token, "typing_on")
-                        
-                        # خطوة 2 (التسلسل الوظيفي 11): إرسال رسالة طلب البيانات الفورية وتفعيل الـ GPS للموقع الجغرافي
                         ask_for_customer_details(sender_id, page_access_token)
-                        
-                        # خطوة 3: إطفاء مؤشر الكتابة
                         send_typing_indicator(sender_id, page_access_token, "typing_off")
-        # ------------------------------------------------------------------
-        # القسم (ب) [الجزء الثالث]: فرز ومعالجة تعليقات المنشورات (Feed / Comments)
-        # ------------------------------------------------------------------
-        
-        # الفحص المعماري: هل يحتوي الحدث القادم على مصفوفة تغييرات الجدار (changes)؟
-    elif "changes" in entry:
+                        
+        # ==================================================================
+        # [المسار الثاني]: فرز ومعالجة تعليقات المنشورات (Feed / Changes)
+        # ==================================================================
+        if "changes" in entry:
             for change in entry["changes"]:
-                # التأكد من أن التغيير حدث في جدار الصفحة (feed)
                 if change.get("field") == "feed":
                     value = change.get("value", {})
                     
-                    # فحص دقيق: نريد التفاعل فقط إذا كان الحدث هو إضافة تعليق جديد (comment add)
+                    # التفاعل فقط إذا كان الحدث هو إضافة تعليق جديد
                     if value.get("item") == "comment" and value.get("verb") == "add":
-                        comment_id = str(value.get("comment_id")) # معرف التعليق الفريد
-                        comment_text = value.get("message")       # النص الذي كتبه الزبون في التعليق
-                        sender_id = str(value.get("from", {}).get("id")) # معرف كاتب التعليق
+                        comment_id = str(value.get("comment_id"))
+                        comment_text = value.get("message", "").strip()
+                        sender_id = str(value.get("from", {}).get("id", ""))
                         
-                        # الفحص الأمني الصارم: تجنب الرد على تعليقات الصفحة نفسها لمنع الحلقات التكرارية
-                        if sender_id == str(page_id):
+                        if sender_id == str(page_id) or not comment_text:
                             continue
                             
-                        # صياغة طلب مخصص للتعليقات لتوجيه Gemini للرد بأسلوب تسويقي فصيح ومختصر
+                        # صياغة الـ Prompt التسويقي الذكي للرد على التعليق مباشرة
                         comment_prompt = (
-                            f"{system_instruction}\n{business_info}\n\n"
+                            f"[تعليماتك الشخصية الأساسية]:\n{system_instruction}\n"
+                            f"[معلومات عمل المتجر الدقيقة]:\n{business_info}\n\n"
                             f"قام أحد العملاء بالتعليق على منشورنا بالعبارة التالية: '{comment_text}'\n"
                             f"التعليمات: اكتب رداً تسويقياً جذاباً، لابقاً، وقصيراً جداً باللغة العربية الفصحى "
                             f"للرد عليه مباشرة كتعليق، دون زيادة أو تأليف معلومات غير موجودة مسبقاً. اكتب الرد مباشرة:"
                         )
                         
                         try:
-                            # توليد الرد عبر عميل جوجل الموحد والحديث
                             response = ai_client.models.generate_content(
                                 model='gemini-2.5-flash',
                                 contents=comment_prompt,
@@ -561,17 +551,20 @@ async def handle_facebook_events(request: Request):
                             )
                             ai_comment_reply = response.text.strip()
                             
-                            # (التسلسل الوظيفي 9): إرسال الرد النهائي كتعليق متصل ومباشر على فيسبوك
                             send_facebook_comment_reply(comment_id, page_access_token, ai_comment_reply)
                             
                         except Exception as e:
                             print(f"🚨 خطأ في الجزء الثالث أثناء توليد أو إرسال رد التعليق: {e}")
+                            
+    # شحن الاستجابة الناجحة لفيسبوك في نهاية الدالة تماماً لمنع التكرار والإعادة
+    return {"status": "EVENT_PROCESSED"}
+
+
 # ==========================================
 # كتلة التشغيل الرئيسية (MAIN EXECUTION BLOCK)
 # ==========================================
 
 if __name__ == "__main__":
     import uvicorn
-    # تشغيل السيرفر تلقائياً عند استدعاء الملف مباشرة
-    # يفتح السيرفر محلياً على المنفذ 8000 مع تفعيل خاصية الـ reload لتسهيل التطوير
+    # تشغيل السيرفر محلياً على المنفذ 8000 مع تفعيل الـ reload لتسهيل التطوير واكتشاف الأخطاء
     uvicorn.run("fb:app", host="127.0.0.1", port=8000, reload=True)
